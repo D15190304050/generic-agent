@@ -10,7 +10,9 @@ package stark.coderaider.genericagent.llm;
  * </ul>
  * 具体方法（如 chatCompletion 等）可在接入首个模型时再确定。
  */
+import stark.coderaider.genericagent.context.MessageList;
+
 public interface ILlmClient
 {
-    // chatCompletion()
+    String chatCompletion(MessageList messageList);
 }

@@ -13,4 +13,15 @@ package stark.coderaider.genericagent.core;
  */
 public class AgentContext
 {
+    private final String threadId;
+
+    public AgentContext(String threadId)
+    {
+        this.threadId = threadId;
+    }
+
+    public String getThreadId()
+    {
+        return threadId;
+    }
 }

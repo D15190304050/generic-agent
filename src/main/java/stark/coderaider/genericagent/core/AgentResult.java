@@ -13,7 +13,10 @@ package stark.coderaider.genericagent.core;
  */
 public class AgentResult
 {
-    // Continue
-    // Finish
-    // Handoff
+    public static enum Type
+    {
+        Continue,
+        Finish,
+        Handoff,
+    }
 }

@@ -12,7 +12,7 @@ public class DefaultTokenBudgeter implements TokenBudgeter
     public BudgetResult budget(MessageList messageList)
     {
         int total = 0;
-        for (Message message : messageList.getMessages())
+        for (Message message : messageList.messages())
         {
             if (message.getContent() != null)
             {

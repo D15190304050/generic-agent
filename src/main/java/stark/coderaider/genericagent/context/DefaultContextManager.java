@@ -8,14 +8,14 @@ public class DefaultContextManager implements ContextManager
     private final RecentTurnsStore recentTurnsStore;
     private final SummaryStore summaryStore;
     private final RagMemoryStore ragMemoryStore;
-    private final CodeIndex codeIndex;
+    private final ICodeIndex codeIndex;
     private final FileDocRag fileDocRag;
     private final ContextBuilder contextBuilder;
     private final TokenBudgeter tokenBudgeter;
     private final Summarizer summarizer;
     private final ContextWriteBack contextWriteBack;
 
-    public DefaultContextManager(QueryAnalyzer queryAnalyzer, RecentTurnsStore recentTurnsStore, SummaryStore summaryStore, RagMemoryStore ragMemoryStore, CodeIndex codeIndex, FileDocRag fileDocRag, ContextBuilder contextBuilder, TokenBudgeter tokenBudgeter, Summarizer summarizer, ContextWriteBack contextWriteBack)
+    public DefaultContextManager(QueryAnalyzer queryAnalyzer, RecentTurnsStore recentTurnsStore, SummaryStore summaryStore, RagMemoryStore ragMemoryStore, ICodeIndex codeIndex, FileDocRag fileDocRag, ContextBuilder contextBuilder, TokenBudgeter tokenBudgeter, Summarizer summarizer, ContextWriteBack contextWriteBack)
     {
         this.queryAnalyzer = queryAnalyzer;
         this.recentTurnsStore = recentTurnsStore;
@@ -40,15 +40,15 @@ public class DefaultContextManager implements ContextManager
         ContextPieces pieces = new ContextPieces(recentTurns, summary, ragEntries, codeEntries, docEntries);
         MessageList messageList = contextBuilder.build(request, pieces);
         BudgetResult budgetResult = tokenBudgeter.budget(messageList);
-        if (!budgetResult.isOverflowed())
+        if (!budgetResult.overflowed())
         {
-            return budgetResult.getMessageList();
+            return budgetResult.messageList();
         }
         String newSummary = summarizer.summarize(recentTurns);
         summaryStore.saveSummary(request.getThreadId(), newSummary);
         ContextPieces summarizedPieces = new ContextPieces(List.of(), newSummary, ragEntries, codeEntries, docEntries);
         MessageList summarizedList = contextBuilder.build(request, summarizedPieces);
-        return tokenBudgeter.budget(summarizedList).getMessageList();
+        return tokenBudgeter.budget(summarizedList).messageList();
     }
 
     public void onUserInput(ContextRequest request)

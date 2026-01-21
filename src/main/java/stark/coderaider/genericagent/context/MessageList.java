@@ -4,13 +4,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-public class MessageList
+public record MessageList(List<Message> messages)
 {
-    private final List<Message> messages;
-
     public MessageList()
     {
-        this.messages = new ArrayList<>();
+        this(new ArrayList<>());
     }
 
     public MessageList(List<Message> messages)
@@ -23,7 +21,8 @@ public class MessageList
         messages.add(message);
     }
 
-    public List<Message> getMessages()
+    @Override
+    public List<Message> messages()
     {
         return Collections.unmodifiableList(messages);
     }

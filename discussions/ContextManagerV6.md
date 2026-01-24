@@ -51,13 +51,13 @@
 2. [系统边界与集成架构](#2-系统边界与集成架构)
 3. [物理架构设计](#3-物理架构设计)
 4. [Prefix Cache 与 Prompt 布局策略](#4-prefix-cache-与-prompt-布局策略)
-5. [Code Index 系统设计](#5-code-index-系统设计)
-6. [核心模块详细规格](#6-核心模块详细规格)
-7. [数据流与时序分析](#7-数据流与时序分析)
-8. [性能模型与容量规划](#8-性能模型与容量规划)
-9. [可靠性与容错设计](#9-可靠性与容错设计)
-10. [有效性论证与 ROI 分析](#10-有效性论证与-roi-分析)
-11. [演进路线与风险缓解](#11-演进路线与风险缓解)
+5. [核心模块详细规格](#6-核心模块详细规格)
+   - [6.12 Code Index 系统设计](#612-code-index-系统设计)
+6. [数据流与时序分析](#7-数据流与时序分析)
+7. [性能模型与容量规划](#8-性能模型与容量规划)
+8. [可靠性与容错设计](#9-可靠性与容错设计)
+9. [有效性论证与 ROI 分析](#10-有效性论证与-roi-分析)
+10. [演进路线与风险缓解](#11-演进路线与风险缓解)
 
 ---
 
@@ -203,8 +203,6 @@ flowchart LR
 ### 2.2 与现有系统的关系
 
 Context Service 作为独立微服务，需要与现有的 `ai-service` 和 `agent-sdk` 进行深度集成。
-<!-- 这里的线太乱了，其实我觉得不需要把线镰刀"云 LLM API"里面的每个节点，而是连到"云 LLM API"就可以了，这样整个图看起来就没有那么乱了 -->
-<!-- 这个(w/ prefix cache)部分的"w/"我没有看懂是什么东西，需要额外的说明一下 -->
 ```mermaid
 graph TB
     classDef existing fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
@@ -251,9 +249,7 @@ graph TB
     end
 
     subgraph CloudLLM ["云 LLM API"]
-        OpenAI["OpenAI API"]
-        Gemini["Vertex AI (Gemini)"]
-        Claude["Anthropic Claude"]
+        CloudAPI["Cloud LLM API<br/>(OpenAI / Gemini / Claude)"]
     end
 
     subgraph Storage ["存储层"]
@@ -290,8 +286,8 @@ graph TB
     CtxOrch --> StateMgr
 
     %% Context Service 到云 LLM
-    CtxOrch --> |"Chat API (w/ Prefix Cache)"| OpenAI & Gemini & Claude
-    CacheMonitor --> |"Parse cached_tokens"| OpenAI & Gemini & Claude
+    CtxOrch --> |"Chat API (with Prefix Cache)"| CloudAPI
+    CacheMonitor --> |"Parse cached_tokens"| CloudAPI
 
     %% Context Service 到存储
     StateMgr --> Redis & PG
@@ -299,13 +295,15 @@ graph TB
     PrefixMgr --> Redis
 
     %% 云 LLM 响应回到 ai-service
-    OpenAI & Gemini & Claude --> |"SSE Stream"| AgentRT
+    CloudAPI --> |"SSE Stream"| AgentRT
 
     class AiService,TS,TC,Memory,AgentRT existing;
     class ContextSvc,CtxOrch,PrefixMgr,CacheMonitor,CodeIdx,StateMgr new;
     class AgentSDK,RunCtx,OpenAIAgent,ToolCall,SdkCtx sdk;
-    class OpenAI,Gemini,Claude cloudapi;
+    class CloudAPI cloudapi;
 ```
+
+> 说明：图中的 “with Prefix Cache” 表示请求在云厂商的前缀缓存能力下运行；Context Service 只需保证前缀稳定并解析 `cached_tokens`，具体缓存命中由云厂商实现。
 
 ### 2.3 集成架构分层说明
 
@@ -387,7 +385,6 @@ sequenceDiagram
 ## 3. 物理架构设计
 
 ### 3.1 全局部署架构
-<!-- 这里也是，我觉得线可以不用这么乱，直接给到"ai-service Cluster"节点，而不是里面的pod节点上，"context-service Cluster", "云 LLM API"节点也是 -->
 ```mermaid
 graph TB
     classDef Ingress fill:#1a237e,stroke:#7986cb,stroke-width:2px,color:#ffffff;
@@ -438,15 +435,15 @@ graph TB
         GCS[("Cloud Storage")]
     end
 
-    %% 连接关系
-    LB_A --> AS_1 & AS_2 & AS_N
-    AS_1 & AS_2 & AS_N --> CS_1 & CS_2 & CS_M
-    CS_1 & CS_2 & CS_M --> OpenAI & Gemini & Claude
-    CS_1 & CS_2 & CS_M --> Redis_A & PG_A & Mongo_A
-    CS_1 & CS_2 & CS_M --> PubSub_A
+    %% 连接关系（对外连线只连接到集群级别，避免图过密）
+    LB_A --> AiService_A
+    AiService_A --> ContextService_A
+    ContextService_A --> CloudLLM
+    ContextService_A --> Redis_A & PG_A & Mongo_A
+    ContextService_A --> PubSub_A
     PubSub_A --> Workers_A
     Workers_A --> Mongo_A & PG_A & GCS
-    CS_1 & CS_2 & CS_M --> GCS
+    ContextService_A --> GCS
     LB_A -.-> Lock_A
 
     class LB_A,Lock_A Ingress;
@@ -547,18 +544,17 @@ graph TB
 ### 4.1 Prompt 布局策略（核心）
 
 #### 4.1.1 Message 结构设计
-<!-- 这里不对，prompt是应该只有2块，但是只有B6在message list里，其它都在system prompt里，这样才是正确的职责划分，也才能利用好prefix cache的机制 -->
-Prompt 只分为两块：**System Message** 与 **Message List**。**B 分层模块全部包含在这两块中**，其中：
-- **System Message**：仅承载稳定、可缓存的内容（B1 + B2a）。
-- **Message List**：承载随对话变化的内容（B4 摘要、B6 近景对话）与当前用户消息（B5 检索上下文 + B3 任务状态 + B2b 会话内画像/情绪 + 原始用户问题）。
+Prompt 只分为两块：**System Message** 与 **Message List**。**所有 B 分层模块都必须落在这两块中**，但为了最大化 Prefix Cache 命中率，我们将「变化慢」的内容尽量放入 System Message：
+- **System Message**：承载稳定或低频变化内容（B1 + B2a + B4）。B4 的摘要按段追加，变化频率远低于 B6，因此可以作为前缀的一部分。
+- **Message List**：仅包含 **B6 近景对话** 与 **当前用户消息**。其中当前用户消息携带当轮动态上下文（B5 检索上下文 + B3 任务状态 + B2b 会话内画像/情绪 + 原始用户问题）。
 
 > **原则**：B5/B3/B2b 以结构化段落附加到“当前用户消息”，但不会改写用户原始问题；NQR 的重写仅用于检索，不覆盖用户输入，避免语义偏移。
 > **术语说明**：本文中的 System Message 与 System Prompt 同义，均指模型的 system 角色消息。
 
 ```mermaid
 graph TD
-    System["System Message<br/>B1: 角色与政策<br/>B2a: 长期稳定用户画像"]
-    Messages["Message List<br/>B4: 历史摘要<br/>B6: 近景对话<br/>当前用户消息: B5 + B3 + B2b + 用户问题"]
+    System["System Message<br/>B1: 角色与政策<br/>B2a: 长期稳定用户画像<br/>B4: 历史摘要"]
+    Messages["Message List<br/>B6: 近景对话<br/>当前用户消息: B5 + B3 + B2b + 用户问题"]
     System --> Messages
 ```
 
@@ -569,6 +565,9 @@ graph TD
 
 ## 用户画像（长期稳定）
 {b2a_profile}
+
+## 历史摘要（B4）
+{b4_summary}
 ```
 
 **示例：完整 Prompt（含 B1/B2a/B2b/B3/B4/B5/B6，Message List 的最后一条为当前用户消息）**：
@@ -582,10 +581,10 @@ System Message
 语言偏好：zh-CN
 订阅级别：Pro
 
-Message List
-[历史摘要/B4]
+## 历史摘要（B4）
 用户已完成 React 项目初始化，确认需要处理异步请求取消问题。
 
+Message List
 [近景对话/B6]
 User: 如何在 useEffect 中处理异步操作？
 Assistant: 可以在 useEffect 中封装异步函数并处理清理逻辑。
@@ -616,11 +615,7 @@ src/App.tsx 中 useEffectHook 的实现片段
   "messages": [
     {
       "role": "system",
-      "content": "你是 Ninja AI 助手，负责解决编程问题。\n行为边界：遵循安全与合规要求。\n\n## 用户画像（长期稳定）\n语言偏好：zh-CN\n订阅级别：Pro"
-    },
-    {
-      "role": "user",
-      "content": "[历史摘要/B4]\n用户之前询问了 React 组件的生命周期..."
+      "content": "你是 Ninja AI 助手，负责解决编程问题。\n行为边界：遵循安全与合规要求。\n\n## 用户画像（长期稳定）\n语言偏好：zh-CN\n订阅级别：Pro\n\n## 历史摘要（B4）\n用户之前询问了 React 组件的生命周期..."
     },
     {
       "role": "assistant",
@@ -648,7 +643,7 @@ src/App.tsx 中 useEffectHook 的实现片段
 |-----|-----|-----|---------|---------|
 | **B1** | System Message | Agent 的角色定义、能力边界、行为准则 | 永不变化 | 全局共享 |
 | **B2a** | System Message | 静态的（长期稳定的）用户画像 | 天级更新 | 用户级共享 |
-| **B4** | Message List | 早期对话的摘要（由异步 Worker 生成） | Session 级追加 | Session 级共享 |
+| **B4** | System Message | 早期对话的摘要（由异步 Worker 生成） | Session 级追加 | Session 级共享 |
 | **B6** | Message List | 近 N 轮真实对话 | 每轮滑动 | 对话级共享 |
 | **B5** | 当前用户消息 | RAG 检索的代码/文档片段 | 每轮变化 | 不缓存 |
 | **B3** | 当前用户消息 | 当前任务状态（如购物车内容） | 每轮变化 | 不缓存 |
@@ -736,7 +731,7 @@ sequenceDiagram
 ```java
 /**
  * Prompt 组装器
- * 将各模块按照优化缓存的顺序组装成 Message List
+ * 将各模块按照优化缓存的顺序组装成 System Message + Message List
  */
 @Service
 public class PromptAssembler {
@@ -754,12 +749,6 @@ public class PromptAssembler {
         messages.add(ChatMessage.systemMessage(systemContent));
         
         // ========== Message List (对话历史) ==========
-        // B4: 历史摘要（作为早期对话的压缩表示）
-        if (blocks.hasHistorySummary()) {
-            messages.add(ChatMessage.userMessage("[历史背景]\n" + blocks.getB4Summary()));
-            messages.add(ChatMessage.assistantMessage("好的，我了解了之前的对话背景。"));
-        }
-        
         // B6: 近 N 轮真实对话
         for (Message msg : blocks.getB6Messages()) {
             if (msg.isUser()) {
@@ -792,6 +781,12 @@ public class PromptAssembler {
             sb.append("- 语言偏好: ").append(blocks.getUserLanguage()).append("\n");
             sb.append("- 订阅级别: ").append(blocks.getSubscriptionTier()).append("\n");
             // ... 其他固定格式的用户信息
+        }
+
+        // B4: 历史摘要（低频变化，放入 System 以提升前缀稳定性）
+        if (blocks.hasHistorySummary()) {
+            sb.append("\n\n## 历史摘要（B4）\n");
+            sb.append(blocks.getB4Summary());
         }
         
         return sb.toString();
@@ -959,6 +954,25 @@ public class GeminiClient {
 }
 ```
 
+#### 4.3.4 Claude 集成
+Claude 通过请求中的 `cache_control` 指令对稳定前缀进行缓存控制：
+
+```java
+@Service
+public class ClaudeClient {
+    public ClaudeResponse chat(List<ClaudeMessage> messages, String systemPrompt) {
+        return anthropic.createMessage(
+            ClaudeRequest.builder()
+                .model("claude-3-5-sonnet")
+                .system(systemPrompt)
+                .messages(messages)
+                .cacheControl("cache")
+                .build()
+        );
+    }
+}
+```
+
 ---
 
 ### 4.4 缓存效果监控
@@ -1000,26 +1014,6 @@ public class CacheMetrics {
 ```
 
 ---
-
-### 4.5 Claude 集成
-<!-- 这里改的更加不对了，它不应该是Section 4.5，而应该是Section 4.3.4，改标题，并且移动到正确的位置 -->
-Claude 通过请求中的 `cache_control` 指令对稳定前缀进行缓存控制：
-
-```java
-@Service
-public class ClaudeClient {
-    public ClaudeResponse chat(List<ClaudeMessage> messages, String systemPrompt) {
-        return anthropic.createMessage(
-            ClaudeRequest.builder()
-                .model("claude-3-5-sonnet")
-                .system(systemPrompt)
-                .messages(messages)
-                .cacheControl("cache")
-                .build()
-        );
-    }
-}
-```
 
 ### 4.6 最佳实践
 
@@ -1074,7 +1068,7 @@ graph TB
     subgraph Processing ["处理层"]
         DocParser["文档解析器<br/>Apache Tika"]
         VisionEncoder["视觉编码器<br/>GPT-4V / Gemini Vision"]
-        CodeIndex["Code Index Service<br/>(见第5章)"]
+        CodeIndex["Code Index Service<br/>(见第6.12节)"]
     end
 
     subgraph Storage ["存储层"]
@@ -1394,540 +1388,6 @@ public class DecayEngine {
 | **P1** | 用户明确引用的历史文件 | 保留完整描述 |
 | **P2** | 本 Session 上传的其他文件 | 保留摘要 |
 | **P3** | 历史 Session 的文件 | 仅保留文件名引用 |
-
----
-
-## 5. Code Index 系统设计
-
-### 5.1 设计目标
-
-Code Index 系统需要实现：
-
-1. **增量索引**：用户上传新代码时，毫秒级更新索引
-2. **语义检索**：支持自然语言描述检索相关代码
-3. **模糊匹配**：支持 CamelCase 分词和拼写容错（如 `"get user name"` → `getUsername`）
-4. **结构感知**：理解代码结构（函数、类、模块）
-5. **多语言支持**：支持 Java, Python, TypeScript, Go 等主流语言
-
-### 5.2 整体架构
-```mermaid
-graph TB
-    classDef Input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
-    classDef Parse fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
-    classDef Index fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
-    classDef Store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef Query fill:#fce4ec,stroke:#c2185b,stroke-width:2px;
-
-    subgraph Input ["输入层"]
-        UserUpload["用户上传代码"]
-        LLMGenerated["LLM 生成代码"]
-        GitSync["Git 仓库同步"]
-    end
-
-    subgraph Parsing ["解析层 (Tree-sitter)"]
-        TSParser["Tree-sitter Parser Pool"]
-        
-        subgraph LanguageSupport ["语言支持"]
-            Java["Java Parser"]
-            Python["Python Parser"]
-            TS["TypeScript Parser"]
-            Go["Go Parser"]
-        end
-        
-        ASTExtractor["AST 结构提取器"]
-        ChunkSplitter["语义切片器"]
-    end
-
-    subgraph Indexing ["索引层"]
-        MetaIndexer["结构化索引器<br/>(符号/依赖)"]
-        TextIndexer["全文索引器<br/>(TSVector/Trigram)"]
-    end
-
-    subgraph Storage ["存储层"]
-        PG[("PostgreSQL (Metadata + FTS)")]
-        Mongo[("MongoDB (Chunks)")]
-        GCS[("GCS (Raw Files)")]
-    end
-
-    subgraph Query ["查询层"]
-        QueryParser["Query Parser (NQR)"]
-        LexicalSearch["Lexical Search"]
-        SymbolSearch["Symbol Search"]
-        Reranker["Reranker"]
-    end
-
-    %% 索引流程
-    UserUpload & LLMGenerated & GitSync --> TSParser
-    TSParser --> Java & Python & TS & Go
-    Java & Python & TS & Go --> ASTExtractor
-    ASTExtractor --> ChunkSplitter
-    ChunkSplitter --> MetaIndexer & TextIndexer
-    MetaIndexer --> PG
-    TextIndexer --> PG
-    ChunkSplitter --> Mongo
-    UserUpload & LLMGenerated & GitSync --> GCS
-
-    %% 查询流程
-    QueryParser --> LexicalSearch
-    QueryParser --> SymbolSearch
-    LexicalSearch --> PG
-    SymbolSearch --> PG
-    LexicalSearch --> Reranker
-    SymbolSearch --> Reranker
-    Reranker --> Mongo
-    Reranker --> |"Top K Results"| QueryParser
-
-    class UserUpload,LLMGenerated,GitSync Input;
-    class TSParser,Java,Python,TS,Go,ASTExtractor,ChunkSplitter Parse;
-    class MetaIndexer,TextIndexer Index;
-    class PG,Mongo,GCS Store;
-    class QueryParser,LexicalSearch,SymbolSearch,Reranker Query;
-```
-
-### 5.3 Code Index Service 详细设计
-**职责与边界**：
-- 处理用户上传、用户输入与 LLM 生成的代码
-- 进行 AST 解析、结构化索引与文本检索
-- 负责召回与融合排序，不输出原始文件
-
-**输入**：
-- code files、inline code、git sync、query
-
-**输出**：
-- CodeChunks（可直接放入 B5）
-
-**交互模块**：
-- Context Orchestrator、NQR Engine、PostgreSQL、MongoDB、GCS
-
-**内部模块**：
-- **AST Parser**：解析多语言代码结构
-- **Chunk Builder**：切分语义块并生成元数据
-- **Hybrid Retriever**：词法检索与符号检索融合
-
-**处理步骤**：
-1. 解析用户输入与上传代码，生成结构化实体
-2. 建立文本索引与符号索引写入 PG/Mongo
-3. 根据 NQR 重写的查询检索并融合结果
-<!-- 这里我没有明白为什么要写入MongoDB和PostgreSQL，而不是只写入其中1个数据库，如果这2个库都是需要的，那就留着，如果只需要1个库，就只画需要的那个库，然后我需要加入文字说明，实际上，任何一个架构上的决策都需要加入说明，而不是突然凭空出现 -->
-```mermaid
-flowchart TB
-    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
-    classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-
-    Inline["用户输入代码"]:::input
-    Upload["文件上传"]:::input
-    LLMGen["LLM 生成代码"]:::input
-    Parse["AST 解析"]:::process
-    Index["索引写入"]:::process
-    Search["检索与融合"]:::process
-    PG[("PostgreSQL")]:::store
-    Mongo[("MongoDB")]:::store
-    GCS[("GCS")]:::store
-
-    Inline --> Parse
-    Upload --> Parse
-    LLMGen --> Parse
-    Parse --> Index --> PG
-    Parse --> Index --> Mongo
-    Upload --> GCS
-    LLMGen --> GCS
-    Search --> PG
-    Search --> Mongo
-```
-
-```mermaid
-sequenceDiagram
-    participant Orch as Context Orchestrator
-    participant Index as Code Index Service
-    participant PG as PostgreSQL
-    participant Mongo as MongoDB
-
-    Orch->>Index: search(query)
-    Index->>PG: lexical/symbol search
-    Index->>Mongo: chunk fetch
-    Index-->>Orch: codeChunks
-```
-
-```java
-@Service
-public class CodeIndexService {
-    public List<CodeChunk> search(String query, SearchContext context, int topK) {
-        List<SearchHit> hits = retrieve(query, context, topK);
-        return hydrateChunks(hits);
-    }
-}
-```
-
-### 5.4 AST 解析与切片
-
-```java
-/**
- * 基于 Tree-sitter 的 AST 解析器
- * 支持多语言的统一解析接口
- */
-@Service
-public class TreeSitterASTParser {
-    
-    private final Map<Language, TSParser> parserPool;
-    
-    public TreeSitterASTParser() {
-        this.parserPool = new EnumMap<>(Language.class);
-        // 初始化各语言解析器
-        parserPool.put(Language.JAVA, new TSParser(TSLanguage.java()));
-        parserPool.put(Language.PYTHON, new TSParser(TSLanguage.python()));
-        parserPool.put(Language.TYPESCRIPT, new TSParser(TSLanguage.typescript()));
-        parserPool.put(Language.GO, new TSParser(TSLanguage.go()));
-    }
-    
-    /**
-     * 解析代码并提取结构化信息
-     */
-    public ParseResult parse(String code, Language language) {
-        TSParser parser = parserPool.get(language);
-        TSTree tree = parser.parseString(null, code);
-        TSNode rootNode = tree.getRootNode();
-        
-        List<CodeEntity> entities = new ArrayList<>();
-        extractEntities(rootNode, code, entities, language);
-        
-        return ParseResult.builder()
-            .language(language)
-            .entities(entities)
-            .tree(tree)
-            .build();
-    }
-    
-    /**
-     * 递归提取代码实体
-     */
-    private void extractEntities(
-            TSNode node, 
-            String code, 
-            List<CodeEntity> entities,
-            Language language) {
-        
-        String nodeType = node.getType();
-        
-        // 根据语言和节点类型提取实体
-        if (isEntityNode(nodeType, language)) {
-            CodeEntity entity = CodeEntity.builder()
-                .type(mapToEntityType(nodeType, language))
-                .name(extractName(node, code, language))
-                .signature(extractSignature(node, code, language))
-                .body(extractBody(node, code))
-                .startLine(node.getStartPoint().getRow())
-                .endLine(node.getEndPoint().getRow())
-                .docComment(extractDocComment(node, code, language))
-                .build();
-            
-            entities.add(entity);
-        }
-        
-        // 递归处理子节点
-        for (int i = 0; i < node.getChildCount(); i++) {
-            extractEntities(node.getChild(i), code, entities, language);
-        }
-    }
-    
-    /**
-     * 判断是否为实体节点
-     */
-    private boolean isEntityNode(String nodeType, Language language) {
-        return switch (language) {
-            case JAVA -> Set.of(
-                "class_declaration", 
-                "method_declaration", 
-                "interface_declaration",
-                "enum_declaration"
-            ).contains(nodeType);
-            
-            case PYTHON -> Set.of(
-                "class_definition", 
-                "function_definition"
-            ).contains(nodeType);
-            
-            case TYPESCRIPT -> Set.of(
-                "class_declaration", 
-                "function_declaration", 
-                "method_definition",
-                "interface_declaration"
-            ).contains(nodeType);
-            
-            default -> false;
-        };
-    }
-}
-```
-
-### 5.5 语义切片策略
-
-```java
-/**
- * 语义感知的代码切片器
- * 确保切片在语义边界上进行，而不是简单的按行数切分
- */
-@Service
-public class SemanticCodeChunker {
-    
-    private static final int MAX_CHUNK_TOKENS = 512;
-    private static final int OVERLAP_TOKENS = 64;
-    
-    private final Tokenizer tokenizer;
-    
-    /**
-     * 将代码切分为语义完整的 Chunk
-     */
-    public List<CodeChunk> chunk(ParseResult parseResult, String code) {
-        List<CodeChunk> chunks = new ArrayList<>();
-        
-        // 策略1: 每个函数/方法作为独立 Chunk
-        for (CodeEntity entity : parseResult.getEntities()) {
-            if (entity.getType() == EntityType.METHOD 
-                || entity.getType() == EntityType.FUNCTION) {
-                
-                int tokenCount = tokenizer.countTokens(entity.getBody());
-                
-                if (tokenCount <= MAX_CHUNK_TOKENS) {
-                    // 完整函数作为一个 Chunk
-                    chunks.add(createChunk(entity, ChunkType.COMPLETE_FUNCTION));
-                } else {
-                    // 大函数需要进一步切分
-                    chunks.addAll(splitLargeFunction(entity));
-                }
-            }
-        }
-        
-        // 策略2: 类级别摘要 Chunk
-        for (CodeEntity entity : parseResult.getEntities()) {
-            if (entity.getType() == EntityType.CLASS 
-                || entity.getType() == EntityType.INTERFACE) {
-                
-                chunks.add(createClassSummaryChunk(entity));
-            }
-        }
-        
-        // 策略3: 导入和全局变量 Chunk
-        chunks.add(createImportsChunk(code, parseResult.getLanguage()));
-        
-        return chunks;
-    }
-    
-    /**
-     * 切分大型函数（保持语义完整性）
-     */
-    private List<CodeChunk> splitLargeFunction(CodeEntity entity) {
-        List<CodeChunk> chunks = new ArrayList<>();
-        String body = entity.getBody();
-        
-        // 按代码块（if/for/while/try）边界切分
-        List<Integer> splitPoints = findBlockBoundaries(body);
-        
-        int currentStart = 0;
-        StringBuilder currentChunk = new StringBuilder();
-        currentChunk.append(entity.getSignature()).append(" {\n");
-        
-        for (int splitPoint : splitPoints) {
-            String segment = body.substring(currentStart, splitPoint);
-            
-            if (tokenizer.countTokens(currentChunk + segment) > MAX_CHUNK_TOKENS) {
-                // 保存当前 Chunk
-                chunks.add(createChunk(
-                    entity, 
-                    ChunkType.PARTIAL_FUNCTION,
-                    currentChunk.toString()
-                ));
-                
-                // 开始新 Chunk（带重叠）
-                currentChunk = new StringBuilder();
-                currentChunk.append("// ... continued from above\n");
-                currentChunk.append(entity.getSignature()).append(" { // partial\n");
-            }
-            
-            currentChunk.append(segment);
-            currentStart = splitPoint;
-        }
-        
-        // 最后一个 Chunk
-        if (currentChunk.length() > 0) {
-            currentChunk.append(body.substring(currentStart));
-            chunks.add(createChunk(entity, ChunkType.PARTIAL_FUNCTION, currentChunk.toString()));
-        }
-        
-        return chunks;
-    }
-}
-```
-
-### 5.6 全文索引与结构化索引
-
-文本块写入后同步生成两类索引：PostgreSQL 全文检索与结构化符号索引，用于在没有向量模型的情况下保持高召回。
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-CREATE TABLE code_chunks (
-    chunk_id text PRIMARY KEY,
-    file_path text,
-    language text,
-    code text,
-    tsv tsvector
-);
-
-CREATE TABLE code_identifiers (
-    chunk_id text,
-    identifier text,
-    identifier_tokens text[]
-);
-
-CREATE INDEX code_chunks_fts_idx ON code_chunks USING GIN (tsv);
-CREATE INDEX code_identifiers_tokens_idx ON code_identifiers USING GIN (identifier_tokens);
-CREATE INDEX code_identifiers_trgm_idx ON code_identifiers USING GIN (identifier gin_trgm_ops);
-```
-
-### 5.7 模糊匹配与 CamelCase 分词
-
-为支持用户自然语言查询匹配代码标识符（如 `"get user name"` → `getUsername`），我们实现了专门的分词和索引策略：
-拼写容错由 trigram 相似度与编辑距离阈值共同保障，可覆盖 `"takeItem"` 与 `"takeItems"` 等轻微拼写差异。
-```java
-/**
- * CamelCase/snake_case 分词器
- * 将标识符拆分为可搜索的单词序列
- */
-@Component
-public class IdentifierTokenizer {
-    
-    // 匹配 CamelCase 边界: "getUserName" → ["get", "User", "Name"]
-    private static final Pattern CAMEL_CASE = Pattern.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
-    // 匹配 snake_case: "get_user_name" → ["get", "user", "name"]
-    private static final Pattern SNAKE_CASE = Pattern.compile("_");
-    
-    /**
-     * 将标识符分词为小写单词列表
-     * "getUsername" → ["get", "username"]
-     * "get_user_name" → ["get", "user", "name"]
-     */
-    public List<String> tokenize(String identifier) {
-        List<String> tokens = new ArrayList<>();
-        
-        // 先按 snake_case 分割
-        String[] snakeParts = SNAKE_CASE.split(identifier);
-        
-        for (String part : snakeParts) {
-            // 再按 CamelCase 分割
-            String[] camelParts = CAMEL_CASE.split(part);
-            for (String token : camelParts) {
-                if (!token.isEmpty()) {
-                    tokens.add(token.toLowerCase());
-                }
-            }
-        }
-        
-        return tokens;
-    }
-    
-    /**
-     * 将用户查询标准化为可匹配的 token 序列
-     * "get user name" → "get user name" (保持原样)
-     * "getUserName" → "get user name" (展开 CamelCase)
-     */
-    public String normalizeQuery(String query) {
-        List<String> words = new ArrayList<>();
-        
-        for (String word : query.split("\\s+")) {
-            words.addAll(tokenize(word));
-        }
-        
-        return String.join(" ", words);
-    }
-}
-```
-
-**索引时处理**：
-
-```sql
-ALTER TABLE code_identifiers
-ADD COLUMN IF NOT EXISTS identifier_tokens text[];
-
-CREATE INDEX IF NOT EXISTS code_identifiers_tokens_idx
-ON code_identifiers USING GIN (identifier_tokens);
-```
-
-**查询示例**：
-
-| 用户查询 | 分词结果 | 可匹配的代码标识符 |
-|---------|---------|------------------|
-| `"get user name"` | `["get", "user", "name"]` | `getUserName`, `getUsername`, `get_user_name` |
-| `"calculate total"` | `["calculate", "total"]` | `calculateTotal`, `calc_total`, `computeTotalAmount` |
-| `"http request"` | `["http", "request"]` | `httpRequest`, `HttpRequestHandler`, `http_request_util` |
-
-### 5.8 混合检索（全文 + 结构）
-
-```java
-/**
- * 混合搜索引擎
- * 结合全文检索与结构化符号检索
- */
-@Service
-public class HybridSearchEngine {
-    
-    private final PostgresSearchClient pgClient;
-    private final MongoChunkRepository chunkRepository;
-    private final Reranker reranker;
-    
-    public List<SearchResult> search(
-            String query,
-            SearchContext context,
-            int topK) {
-        
-        QueryAnalysis analysis = analyzeQuery(query);
-        
-        CompletableFuture<List<SearchHit>> lexicalFuture =
-            CompletableFuture.supplyAsync(() ->
-                pgClient.fullTextSearch(query, topK * 3));
-        
-        CompletableFuture<List<SearchHit>> symbolFuture =
-            CompletableFuture.supplyAsync(() ->
-                pgClient.symbolSearch(analysis.getExtractedKeywords(), topK * 3));
-        
-        List<SearchHit> lexicalHits = lexicalFuture.join();
-        List<SearchHit> symbolHits = symbolFuture.join();
-        
-        List<SearchHit> merged = mergeWithRrf(lexicalHits, symbolHits);
-        List<SearchResult> reranked = reranker.rerank(query, merged, topK);
-        
-        return attachChunks(reranked, chunkRepository, context);
-    }
-    
-    private List<SearchHit> mergeWithRrf(
-            List<SearchHit> lexicalHits,
-            List<SearchHit> symbolHits) {
-        
-        Map<String, SearchHit> resultMap = new HashMap<>();
-        int k = 60;
-        
-        for (int i = 0; i < lexicalHits.size(); i++) {
-            SearchHit hit = lexicalHits.get(i);
-            float rrfScore = 1.0f / (k + i + 1);
-            resultMap.computeIfAbsent(hit.getChunkId(),
-                id -> new SearchHit(id, hit.getScore()))
-                .addScore(rrfScore);
-        }
-        
-        for (int i = 0; i < symbolHits.size(); i++) {
-            SearchHit hit = symbolHits.get(i);
-            float rrfScore = 1.0f / (k + i + 1);
-            resultMap.computeIfAbsent(hit.getChunkId(),
-                id -> new SearchHit(id, hit.getScore()))
-                .addScore(rrfScore);
-        }
-        
-        return resultMap.values().stream()
-            .sorted(Comparator.comparingDouble(SearchHit::getScore).reversed())
-            .collect(Collectors.toList());
-    }
-}
-```
 
 ---
 
@@ -2340,7 +1800,23 @@ public class NQREngine {
 ```
 
 ### 6.5 State Overlay Engine 详细设计
-<!-- 我觉得应该在这里解释shadow event的概念，然后加一个section来描述shadow event是怎么产生的，它的时序是什么样的，我们怎么用的，不然就比较难理解，它突然出现一个shadow event的概念，包括后面的shadow buffer -->
+
+#### 6.5.1 Shadow Event 与 Shadow Buffer 说明
+**Shadow Event** 是对“结构化任务状态”的增量变更记录，目的是在主状态尚未持久化时，仍然保证 **Read-after-Write** 一致性。它只包含可合并的结构化字段，不承载对话文本或摘要。
+
+**Shadow Buffer** 是每个 thread 在 Redis 中的事件缓冲区（如 `shadow:{thread_id}`），保存近期的 Shadow Event 列表，用于在读取上下文时做“基准状态 + 增量事件”的即时合并。
+
+**产生时序（简化）**：
+1. `ai-service` 在一轮对话结束后调用 `SaveContext`，携带 `state_delta`（结构化变更）。
+2. `context-service` 将 `state_delta` 追加写入 Redis Shadow Buffer（低延迟），并发布异步事件。
+3. 异步 Worker 将事件持久化到 PostgreSQL，形成新的 BaseState。
+4. 下一次 `GetContext` 时，State Overlay Engine 读取 PG BaseState + Redis Shadow Buffer 做合并，确保最新状态可见。
+
+**使用规则**：
+- **只写增量**：每个 Shadow Event 只包含变更字段与版本信息，避免全量复制。
+- **按序合并**：按 `sync_epoch`（或逻辑时钟）排序，保证确定性合并。
+- **可丢弃**：当 PG 基准状态推进后，旧事件可安全清理。
+
 **职责与边界**：
 - 以 PostgreSQL 为基准状态，叠加 Redis Shadow Buffer 的增量事件
 - 保证 Read-after-Write 一致性
@@ -2484,12 +1960,12 @@ public class DecayEngine {
 
 **内部模块**：
 - **System Builder**：构建稳定的 System Prompt
-- **History Builder**：拼接 B4/B6 历史消息
+- **History Builder**：拼接 B6 近景对话消息
 - **Current Builder**：组装 B5/B3/B2b 动态上下文与用户问题
 
 **处理步骤**：
-1. 构建 B1/B2a 的稳定系统消息
-2. 将 B4/B6 组织为 Message List
+1. 构建 B1/B2a/B4 的稳定系统消息
+2. 将 B6 组织为 Message List
 3. 生成当前用户消息并追加到列表末尾
 
 ```mermaid
@@ -2498,8 +1974,8 @@ flowchart TB
     classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
 
     Blocks["PromptBlocks"]:::input
-    System["System Message (B1/B2a)"]:::process
-    Messages["Message List (B4/B6 + 当前消息: B5/B3/B2b)"]:::process
+    System["System Message (B1/B2a/B4)"]:::process
+    Messages["Message List (B6 + 当前消息: B5/B3/B2b)"]:::process
     Output["AssembledPrompt"]:::input
 
     Blocks --> System --> Output
@@ -2778,7 +2254,546 @@ public class ImageProcessor {
 ```
 
 ---
-<!-- Code Index是不是应该放到这里作为一个Section，而不是作为一个chapter写在前面 -->
+### 6.12 Code Index 系统设计
+
+#### 6.12.1 设计目标
+
+Code Index 系统需要实现：
+
+1. **增量索引**：用户上传新代码时，毫秒级更新索引
+2. **语义检索**：支持自然语言描述检索相关代码
+3. **模糊匹配**：支持 CamelCase 分词和拼写容错（如 `"get user name"` → `getUsername`）
+4. **结构感知**：理解代码结构（函数、类、模块）
+5. **多语言支持**：支持 Java, Python, TypeScript, Go 等主流语言
+
+#### 6.12.2 整体架构
+```mermaid
+graph TB
+    classDef Input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef Parse fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+    classDef Index fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef Store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef Query fill:#fce4ec,stroke:#c2185b,stroke-width:2px;
+
+    subgraph Input ["输入层"]
+        UserUpload["用户上传代码"]
+        LLMGenerated["LLM 生成代码"]
+        GitSync["Git 仓库同步"]
+    end
+
+    subgraph Parsing ["解析层 (Tree-sitter)"]
+        TSParser["Tree-sitter Parser Pool"]
+        
+        subgraph LanguageSupport ["语言支持"]
+            Java["Java Parser"]
+            Python["Python Parser"]
+            TS["TypeScript Parser"]
+            Go["Go Parser"]
+        end
+        
+        ASTExtractor["AST 结构提取器"]
+        ChunkSplitter["语义切片器"]
+    end
+
+    subgraph Indexing ["索引层"]
+        MetaIndexer["结构化索引器<br/>(符号/依赖)"]
+        TextIndexer["全文索引器<br/>(TSVector/Trigram)"]
+    end
+
+    subgraph Storage ["存储层"]
+        PG[("PostgreSQL (Metadata + FTS)")]
+        Mongo[("MongoDB (Chunks)")]
+        GCS[("GCS (Raw Files)")]
+    end
+
+    subgraph Query ["查询层"]
+        QueryParser["Query Parser (NQR)"]
+        LexicalSearch["Lexical Search"]
+        SymbolSearch["Symbol Search"]
+        Reranker["Reranker"]
+    end
+
+    %% 索引流程
+    UserUpload & LLMGenerated & GitSync --> TSParser
+    TSParser --> Java & Python & TS & Go
+    Java & Python & TS & Go --> ASTExtractor
+    ASTExtractor --> ChunkSplitter
+    ChunkSplitter --> MetaIndexer & TextIndexer
+    MetaIndexer --> PG
+    TextIndexer --> PG
+    ChunkSplitter --> Mongo
+    UserUpload & LLMGenerated & GitSync --> GCS
+
+    %% 查询流程
+    QueryParser --> LexicalSearch
+    QueryParser --> SymbolSearch
+    LexicalSearch --> PG
+    SymbolSearch --> PG
+    LexicalSearch --> Reranker
+    SymbolSearch --> Reranker
+    Reranker --> Mongo
+    Reranker --> |"Top K Results"| QueryParser
+
+    class UserUpload,LLMGenerated,GitSync Input;
+    class TSParser,Java,Python,TS,Go,ASTExtractor,ChunkSplitter Parse;
+    class MetaIndexer,TextIndexer Index;
+    class PG,Mongo,GCS Store;
+    class QueryParser,LexicalSearch,SymbolSearch,Reranker Query;
+```
+
+#### 6.12.3 Code Index Service 详细设计
+**职责与边界**：
+- 处理用户上传、用户输入与 LLM 生成的代码
+- 进行 AST 解析、结构化索引与文本检索
+- 负责召回与融合排序，不输出原始文件
+
+**输入**：
+- code files、inline code、git sync、query
+
+**输出**：
+- CodeChunks（可直接放入 B5）
+
+**交互模块**：
+- Context Orchestrator、NQR Engine、PostgreSQL、MongoDB、GCS
+
+**内部模块**：
+- **AST Parser**：解析多语言代码结构
+- **Chunk Builder**：切分语义块并生成元数据
+- **Hybrid Retriever**：词法检索与符号检索融合
+
+**处理步骤**：
+1. 解析用户输入与上传代码，生成结构化实体
+2. 建立文本索引与符号索引写入 PG/Mongo
+3. 根据 NQR 重写的查询检索并融合结果
+
+**存储选型说明（为什么同时使用 PostgreSQL + MongoDB）**：
+- **PostgreSQL**：承载结构化元数据、符号索引与全文检索（TSVector/Trigram），适合强一致与复杂过滤查询。
+- **MongoDB**：承载大体量文本块与 AST 片段的原始内容，读取吞吐更高且更适合文档型存储。
+- **职责分离**：PG 负责“检索入口与排序依据”，Mongo 负责“内容载体与分片读取”，避免单库同时承担事务索引与大块文档存储导致的性能冲突。
+- **回退策略**：若业务规模较小，可先只保留 PG（含原始文本块）以简化运维；当文本规模或读取 QPS 达到瓶颈时再引入 MongoDB 进行拆分。
+
+```mermaid
+flowchart TB
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+
+    Inline["用户输入代码"]:::input
+    Upload["文件上传"]:::input
+    LLMGen["LLM 生成代码"]:::input
+    Parse["AST 解析"]:::process
+    Index["索引写入"]:::process
+    Search["检索与融合"]:::process
+    PG[("PostgreSQL")]:::store
+    Mongo[("MongoDB")]:::store
+    GCS[("GCS")]:::store
+
+    Inline --> Parse
+    Upload --> Parse
+    LLMGen --> Parse
+    Parse --> Index --> PG
+    Parse --> Index --> Mongo
+    Upload --> GCS
+    LLMGen --> GCS
+    Search --> PG
+    Search --> Mongo
+```
+
+```mermaid
+sequenceDiagram
+    participant Orch as Context Orchestrator
+    participant Index as Code Index Service
+    participant PG as PostgreSQL
+    participant Mongo as MongoDB
+
+    Orch->>Index: search(query)
+    Index->>PG: lexical/symbol search
+    Index->>Mongo: chunk fetch
+    Index-->>Orch: codeChunks
+```
+
+```java
+@Service
+public class CodeIndexService {
+    public List<CodeChunk> search(String query, SearchContext context, int topK) {
+        List<SearchHit> hits = retrieve(query, context, topK);
+        return hydrateChunks(hits);
+    }
+}
+```
+
+#### 6.12.4 AST 解析与切片
+
+```java
+/**
+ * 基于 Tree-sitter 的 AST 解析器
+ * 支持多语言的统一解析接口
+ */
+@Service
+public class TreeSitterASTParser {
+    
+    private final Map<Language, TSParser> parserPool;
+    
+    public TreeSitterASTParser() {
+        this.parserPool = new EnumMap<>(Language.class);
+        // 初始化各语言解析器
+        parserPool.put(Language.JAVA, new TSParser(TSLanguage.java()));
+        parserPool.put(Language.PYTHON, new TSParser(TSLanguage.python()));
+        parserPool.put(Language.TYPESCRIPT, new TSParser(TSLanguage.typescript()));
+        parserPool.put(Language.GO, new TSParser(TSLanguage.go()));
+    }
+    
+    /**
+     * 解析代码并提取结构化信息
+     */
+    public ParseResult parse(String code, Language language) {
+        TSParser parser = parserPool.get(language);
+        TSTree tree = parser.parseString(null, code);
+        TSNode rootNode = tree.getRootNode();
+        
+        List<CodeEntity> entities = new ArrayList<>();
+        extractEntities(rootNode, code, entities, language);
+        
+        return ParseResult.builder()
+            .language(language)
+            .entities(entities)
+            .tree(tree)
+            .build();
+    }
+    
+    /**
+     * 递归提取代码实体
+     */
+    private void extractEntities(
+            TSNode node, 
+            String code, 
+            List<CodeEntity> entities,
+            Language language) {
+        
+        String nodeType = node.getType();
+        
+        // 根据语言和节点类型提取实体
+        if (isEntityNode(nodeType, language)) {
+            CodeEntity entity = CodeEntity.builder()
+                .type(mapToEntityType(nodeType, language))
+                .name(extractName(node, code, language))
+                .signature(extractSignature(node, code, language))
+                .body(extractBody(node, code))
+                .startLine(node.getStartPoint().getRow())
+                .endLine(node.getEndPoint().getRow())
+                .docComment(extractDocComment(node, code, language))
+                .build();
+            
+            entities.add(entity);
+        }
+        
+        // 递归处理子节点
+        for (int i = 0; i < node.getChildCount(); i++) {
+            extractEntities(node.getChild(i), code, entities, language);
+        }
+    }
+    
+    /**
+     * 判断是否为实体节点
+     */
+    private boolean isEntityNode(String nodeType, Language language) {
+        return switch (language) {
+            case JAVA -> Set.of(
+                "class_declaration", 
+                "method_declaration", 
+                "interface_declaration",
+                "enum_declaration"
+            ).contains(nodeType);
+            
+            case PYTHON -> Set.of(
+                "class_definition", 
+                "function_definition"
+            ).contains(nodeType);
+            
+            case TYPESCRIPT -> Set.of(
+                "class_declaration", 
+                "function_declaration", 
+                "method_definition",
+                "interface_declaration"
+            ).contains(nodeType);
+            
+            default -> false;
+        };
+    }
+}
+```
+
+#### 6.12.5 语义切片策略
+
+```java
+/**
+ * 语义感知的代码切片器
+ * 确保切片在语义边界上进行，而不是简单的按行数切分
+ */
+@Service
+public class SemanticCodeChunker {
+    
+    private static final int MAX_CHUNK_TOKENS = 512;
+    private static final int OVERLAP_TOKENS = 64;
+    
+    private final Tokenizer tokenizer;
+    
+    /**
+     * 将代码切分为语义完整的 Chunk
+     */
+    public List<CodeChunk> chunk(ParseResult parseResult, String code) {
+        List<CodeChunk> chunks = new ArrayList<>();
+        
+        // 策略1: 每个函数/方法作为独立 Chunk
+        for (CodeEntity entity : parseResult.getEntities()) {
+            if (entity.getType() == EntityType.METHOD 
+                || entity.getType() == EntityType.FUNCTION) {
+                
+                int tokenCount = tokenizer.countTokens(entity.getBody());
+                
+                if (tokenCount <= MAX_CHUNK_TOKENS) {
+                    // 完整函数作为一个 Chunk
+                    chunks.add(createChunk(entity, ChunkType.COMPLETE_FUNCTION));
+                } else {
+                    // 大函数需要进一步切分
+                    chunks.addAll(splitLargeFunction(entity));
+                }
+            }
+        }
+        
+        // 策略2: 类级别摘要 Chunk
+        for (CodeEntity entity : parseResult.getEntities()) {
+            if (entity.getType() == EntityType.CLASS 
+                || entity.getType() == EntityType.INTERFACE) {
+                
+                chunks.add(createClassSummaryChunk(entity));
+            }
+        }
+        
+        // 策略3: 导入和全局变量 Chunk
+        chunks.add(createImportsChunk(code, parseResult.getLanguage()));
+        
+        return chunks;
+    }
+    
+    /**
+     * 切分大型函数（保持语义完整性）
+     */
+    private List<CodeChunk> splitLargeFunction(CodeEntity entity) {
+        List<CodeChunk> chunks = new ArrayList<>();
+        String body = entity.getBody();
+        
+        // 按代码块（if/for/while/try）边界切分
+        List<Integer> splitPoints = findBlockBoundaries(body);
+        
+        int currentStart = 0;
+        StringBuilder currentChunk = new StringBuilder();
+        currentChunk.append(entity.getSignature()).append(" {\n");
+        
+        for (int splitPoint : splitPoints) {
+            String segment = body.substring(currentStart, splitPoint);
+            
+            if (tokenizer.countTokens(currentChunk + segment) > MAX_CHUNK_TOKENS) {
+                // 保存当前 Chunk
+                chunks.add(createChunk(
+                    entity, 
+                    ChunkType.PARTIAL_FUNCTION,
+                    currentChunk.toString()
+                ));
+                
+                // 开始新 Chunk（带重叠）
+                currentChunk = new StringBuilder();
+                currentChunk.append("// ... continued from above\n");
+                currentChunk.append(entity.getSignature()).append(" { // partial\n");
+            }
+            
+            currentChunk.append(segment);
+            currentStart = splitPoint;
+        }
+        
+        // 最后一个 Chunk
+        if (currentChunk.length() > 0) {
+            currentChunk.append(body.substring(currentStart));
+            chunks.add(createChunk(entity, ChunkType.PARTIAL_FUNCTION, currentChunk.toString()));
+        }
+        
+        return chunks;
+    }
+}
+```
+
+#### 6.12.6 全文索引与结构化索引
+
+文本块写入后同步生成两类索引：PostgreSQL 全文检索与结构化符号索引，用于在没有向量模型的情况下保持高召回。
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE TABLE code_chunks (
+    chunk_id text PRIMARY KEY,
+    file_path text,
+    language text,
+    code text,
+    tsv tsvector
+);
+
+CREATE TABLE code_identifiers (
+    chunk_id text,
+    identifier text,
+    identifier_tokens text[]
+);
+
+CREATE INDEX code_chunks_fts_idx ON code_chunks USING GIN (tsv);
+CREATE INDEX code_identifiers_tokens_idx ON code_identifiers USING GIN (identifier_tokens);
+CREATE INDEX code_identifiers_trgm_idx ON code_identifiers USING GIN (identifier gin_trgm_ops);
+```
+
+#### 6.12.7 模糊匹配与 CamelCase 分词
+
+为支持用户自然语言查询匹配代码标识符（如 `"get user name"` → `getUsername`），我们实现了专门的分词和索引策略：
+拼写容错由 trigram 相似度与编辑距离阈值共同保障，可覆盖 `"takeItem"` 与 `"takeItems"` 等轻微拼写差异。
+```java
+/**
+ * CamelCase/snake_case 分词器
+ * 将标识符拆分为可搜索的单词序列
+ */
+@Component
+public class IdentifierTokenizer {
+    
+    // 匹配 CamelCase 边界: "getUserName" → ["get", "User", "Name"]
+    private static final Pattern CAMEL_CASE = Pattern.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
+    // 匹配 snake_case: "get_user_name" → ["get", "user", "name"]
+    private static final Pattern SNAKE_CASE = Pattern.compile("_");
+    
+    /**
+     * 将标识符分词为小写单词列表
+     * "getUsername" → ["get", "username"]
+     * "get_user_name" → ["get", "user", "name"]
+     */
+    public List<String> tokenize(String identifier) {
+        List<String> tokens = new ArrayList<>();
+        
+        // 先按 snake_case 分割
+        String[] snakeParts = SNAKE_CASE.split(identifier);
+        
+        for (String part : snakeParts) {
+            // 再按 CamelCase 分割
+            String[] camelParts = CAMEL_CASE.split(part);
+            for (String token : camelParts) {
+                if (!token.isEmpty()) {
+                    tokens.add(token.toLowerCase());
+                }
+            }
+        }
+        
+        return tokens;
+    }
+    
+    /**
+     * 将用户查询标准化为可匹配的 token 序列
+     * "get user name" → "get user name" (保持原样)
+     * "getUserName" → "get user name" (展开 CamelCase)
+     */
+    public String normalizeQuery(String query) {
+        List<String> words = new ArrayList<>();
+        
+        for (String word : query.split("\\s+")) {
+            words.addAll(tokenize(word));
+        }
+        
+        return String.join(" ", words);
+    }
+}
+```
+
+**索引时处理**：
+
+```sql
+ALTER TABLE code_identifiers
+ADD COLUMN IF NOT EXISTS identifier_tokens text[];
+
+CREATE INDEX IF NOT EXISTS code_identifiers_tokens_idx
+ON code_identifiers USING GIN (identifier_tokens);
+```
+
+**查询示例**：
+
+| 用户查询 | 分词结果 | 可匹配的代码标识符 |
+|---------|---------|------------------|
+| `"get user name"` | `["get", "user", "name"]` | `getUserName`, `getUsername`, `get_user_name` |
+| `"calculate total"` | `["calculate", "total"]` | `calculateTotal`, `calc_total`, `computeTotalAmount` |
+| `"http request"` | `["http", "request"]` | `httpRequest`, `HttpRequestHandler`, `http_request_util` |
+
+#### 6.12.8 混合检索（全文 + 结构）
+
+```java
+/**
+ * 混合搜索引擎
+ * 结合全文检索与结构化符号检索
+ */
+@Service
+public class HybridSearchEngine {
+    
+    private final PostgresSearchClient pgClient;
+    private final MongoChunkRepository chunkRepository;
+    private final Reranker reranker;
+    
+    public List<SearchResult> search(
+            String query,
+            SearchContext context,
+            int topK) {
+        
+        QueryAnalysis analysis = analyzeQuery(query);
+        
+        CompletableFuture<List<SearchHit>> lexicalFuture =
+            CompletableFuture.supplyAsync(() ->
+                pgClient.fullTextSearch(query, topK * 3));
+        
+        CompletableFuture<List<SearchHit>> symbolFuture =
+            CompletableFuture.supplyAsync(() ->
+                pgClient.symbolSearch(analysis.getExtractedKeywords(), topK * 3));
+        
+        List<SearchHit> lexicalHits = lexicalFuture.join();
+        List<SearchHit> symbolHits = symbolFuture.join();
+        
+        List<SearchHit> merged = mergeWithRrf(lexicalHits, symbolHits);
+        List<SearchResult> reranked = reranker.rerank(query, merged, topK);
+        
+        return attachChunks(reranked, chunkRepository, context);
+    }
+    
+    private List<SearchHit> mergeWithRrf(
+            List<SearchHit> lexicalHits,
+            List<SearchHit> symbolHits) {
+        
+        Map<String, SearchHit> resultMap = new HashMap<>();
+        int k = 60;
+        
+        for (int i = 0; i < lexicalHits.size(); i++) {
+            SearchHit hit = lexicalHits.get(i);
+            float rrfScore = 1.0f / (k + i + 1);
+            resultMap.computeIfAbsent(hit.getChunkId(),
+                id -> new SearchHit(id, hit.getScore()))
+                .addScore(rrfScore);
+        }
+        
+        for (int i = 0; i < symbolHits.size(); i++) {
+            SearchHit hit = symbolHits.get(i);
+            float rrfScore = 1.0f / (k + i + 1);
+            resultMap.computeIfAbsent(hit.getChunkId(),
+                id -> new SearchHit(id, hit.getScore()))
+                .addScore(rrfScore);
+        }
+        
+        return resultMap.values().stream()
+            .sorted(Comparator.comparingDouble(SearchHit::getScore).reversed())
+            .collect(Collectors.toList());
+    }
+}
+```
+
+---
+
 ## 7. 数据流与时序分析
 
 ### 7.1 完整请求生命周期
@@ -2882,7 +2897,11 @@ sequenceDiagram
 
 #### 7.2.1 LSH 前缀桶策略
 LSH 用于对 Prefix Hash 做近似分桶，降低 PrefixHint 的扫描与比对成本。系统采用固定桶数与短哈希前缀作为桶键，将可能命中的候选聚集到同一桶内，再执行精确哈希比对。
-<!-- 这里还是没讲清楚LSH是用来做什么的，我这里只能看到LSH的一个基本原理，但我不知道它对于整个系统/服务而言提供了什么功能，为什么为什么需要这个模块 -->
+**在本系统中的作用**：
+- **加速前缀匹配**：Prefix Cache Manager 需要从 Redis 中找到“最相似的前缀”。如果全量扫描，每次请求的比较成本会随 PrefixHint 数量线性增长。
+- **控制延迟上界**：通过 LSH 分桶将候选集缩小到固定桶内，保证查找成本可控（近似 O(1) 桶内扫描），避免在高并发下拖慢 GetContext。
+- **提升命中层级**：在候选集缩小后，可以优先比对长前缀（B1+B2a+B4+B6），再退化到短前缀，提升“深层命中”的概率。
+
 **策略要点**：
 - **分桶维度**：以 B1/B2a/B4/B6 的分层哈希为输入，先取短哈希前缀形成桶键。
 - **候选集缩小**：仅对同桶内的候选做完整哈希比对。

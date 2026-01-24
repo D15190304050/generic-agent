@@ -79,14 +79,14 @@
 ### 1.2 架构约束
 
 1. **基础设施约束**：
-   - 部署于 GCP 云环境
-   - LLM 推理使用**云 API**：OpenAI / Gemini / Claude
-   - 存储基于 Redis + PostgreSQL + GCS
+    - 部署于 GCP 云环境
+    - LLM 推理使用**云 API**：OpenAI / Gemini / Claude
+    - 存储基于 Redis + PostgreSQL + GCS
 
 2. **组织约束**：
-   - 必须与现有 `ai-service` 和 `agent-sdk` 渐进式集成
-   - 保持 API 向后兼容
-   - 支持多租户隔离
+    - 必须与现有 `ai-service` 和 `agent-sdk` 渐进式集成
+    - 保持 API 向后兼容
+    - 支持多租户隔离
 
 ---
 
@@ -203,7 +203,8 @@ flowchart LR
 ### 2.2 与现有系统的关系
 
 Context Service 作为独立微服务，需要与现有的 `ai-service` 和 `agent-sdk` 进行深度集成。
-
+<!-- 这里的线太乱了，其实我觉得不需要把线镰刀"云 LLM API"里面的每个节点，而是连到"云 LLM API"就可以了，这样整个图看起来就没有那么乱了 -->
+<!-- 这个(w/ prefix cache)部分的"w/"我没有看懂是什么东西，需要额外的说明一下 -->
 ```mermaid
 graph TB
     classDef existing fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
@@ -386,7 +387,7 @@ sequenceDiagram
 ## 3. 物理架构设计
 
 ### 3.1 全局部署架构
-
+<!-- 这里也是，我觉得线可以不用这么乱，直接给到"ai-service Cluster"节点，而不是里面的pod节点上，"context-service Cluster", "云 LLM API"节点也是 -->
 ```mermaid
 graph TB
     classDef Ingress fill:#1a237e,stroke:#7986cb,stroke-width:2px,color:#ffffff;
@@ -546,7 +547,7 @@ graph TB
 ### 4.1 Prompt 布局策略（核心）
 
 #### 4.1.1 Message 结构设计
-
+<!-- 这里不对，prompt是应该只有2块，但是只有B6在message list里，其它都在system prompt里，这样才是正确的职责划分，也才能利用好prefix cache的机制 -->
 Prompt 只分为两块：**System Message** 与 **Message List**。**B 分层模块全部包含在这两块中**，其中：
 - **System Message**：仅承载稳定、可缓存的内容（B1 + B2a）。
 - **Message List**：承载随对话变化的内容（B4 摘要、B6 近景对话）与当前用户消息（B5 检索上下文 + B3 任务状态 + B2b 会话内画像/情绪 + 原始用户问题）。
@@ -722,12 +723,12 @@ sequenceDiagram
 
 #### 4.1.7 RAG 检索范围与步骤
 
-1. **查询理解**：NQR 重写用户意图，抽取实体与关键词  
-2. **多源召回**：  
-   - 代码与文档索引：PostgreSQL 全文检索与 MongoDB 文本块索引  
-   - 对话历史检索：对话归档的关键片段检索，补足 B4/B6 未覆盖的细节  
-   - 附件与工具结果：当前线程的附件描述与近期工具输出  
-3. **结果融合**：对多路召回结果进行去重、加权融合与上下文裁剪  
+1. **查询理解**：NQR 重写用户意图，抽取实体与关键词
+2. **多源召回**：
+    - 代码与文档索引：PostgreSQL 全文检索与 MongoDB 文本块索引
+    - 对话历史检索：对话归档的关键片段检索，补足 B4/B6 未覆盖的细节
+    - 附件与工具结果：当前线程的附件描述与近期工具输出
+3. **结果融合**：对多路召回结果进行去重、加权融合与上下文裁剪
 4. **投递到 B5**：仅输出与当前问题强相关的片段
 
 #### 4.1.8 Java 实现
@@ -1001,7 +1002,7 @@ public class CacheMetrics {
 ---
 
 ### 4.5 Claude 集成
-
+<!-- 这里改的更加不对了，它不应该是Section 4.5，而应该是Section 4.3.4，改标题，并且移动到正确的位置 -->
 Claude 通过请求中的 `cache_control` 指令对稳定前缀进行缓存控制：
 
 ```java
@@ -1507,7 +1508,7 @@ graph TB
 1. 解析用户输入与上传代码，生成结构化实体
 2. 建立文本索引与符号索引写入 PG/Mongo
 3. 根据 NQR 重写的查询检索并融合结果
-
+<!-- 这里我没有明白为什么要写入MongoDB和PostgreSQL，而不是只写入其中1个数据库，如果这2个库都是需要的，那就留着，如果只需要1个库，就只画需要的那个库，然后我需要加入文字说明，实际上，任何一个架构上的决策都需要加入说明，而不是突然凭空出现 -->
 ```mermaid
 flowchart TB
     classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
@@ -2339,6 +2340,7 @@ public class NQREngine {
 ```
 
 ### 6.5 State Overlay Engine 详细设计
+<!-- 我觉得应该在这里解释shadow event的概念，然后加一个section来描述shadow event是怎么产生的，它的时序是什么样的，我们怎么用的，不然就比较难理解，它突然出现一个shadow event的概念，包括后面的shadow buffer -->
 **职责与边界**：
 - 以 PostgreSQL 为基准状态，叠加 Redis Shadow Buffer 的增量事件
 - 保证 Read-after-Write 一致性
@@ -2776,7 +2778,7 @@ public class ImageProcessor {
 ```
 
 ---
-
+<!-- Code Index是不是应该放到这里作为一个Section，而不是作为一个chapter写在前面 -->
 ## 7. 数据流与时序分析
 
 ### 7.1 完整请求生命周期
@@ -2880,7 +2882,7 @@ sequenceDiagram
 
 #### 7.2.1 LSH 前缀桶策略
 LSH 用于对 Prefix Hash 做近似分桶，降低 PrefixHint 的扫描与比对成本。系统采用固定桶数与短哈希前缀作为桶键，将可能命中的候选聚集到同一桶内，再执行精确哈希比对。
-
+<!-- 这里还是没讲清楚LSH是用来做什么的，我这里只能看到LSH的一个基本原理，但我不知道它对于整个系统/服务而言提供了什么功能，为什么为什么需要这个模块 -->
 **策略要点**：
 - **分桶维度**：以 B1/B2a/B4/B6 的分层哈希为输入，先取短哈希前缀形成桶键。
 - **候选集缩小**：仅对同桶内的候选做完整哈希比对。
@@ -3008,44 +3010,44 @@ graph TB
  */
 @Service
 public class ContextDegradationPolicy {
-    
+
     private final CircuitBreaker circuitBreaker;
     private final DegradationMetrics metrics;
-    
+
     /**
      * NQR 降级链
      */
     public String rewriteQueryWithFallback(
-            String query, 
-            List<Message> history,
-            TaskState state) {
-        
+        String query,
+        List<Message> history,
+        TaskState state) {
+
         // Level 1: 7B 模型
         try {
             return nqrEngine7B.rewrite(query, history, state);
         } catch (Exception e) {
             metrics.recordFallback("nqr", 1);
         }
-        
+
         // Level 2: 1.5B 模型
         try {
             return nqrEngine1_5B.rewrite(query, history, state);
         } catch (Exception e) {
             metrics.recordFallback("nqr", 2);
         }
-        
+
         // Level 3: 正则规则
         try {
             return regexNQR.rewrite(query, history);
         } catch (Exception e) {
             metrics.recordFallback("nqr", 3);
         }
-        
+
         // Level 4: 透传原始查询
         metrics.recordFallback("nqr", 4);
         return query;
     }
-    
+
     /**
      * 状态获取降级链
      */
@@ -3058,7 +3060,7 @@ public class ContextDegradationPolicy {
                 metrics.recordFallback("state", 1);
             }
         }
-        
+
         // Level 2: PostgreSQL (冷路径)
         if (circuitBreaker.isPostgresHealthy()) {
             try {
@@ -3067,20 +3069,20 @@ public class ContextDegradationPolicy {
                 metrics.recordFallback("state", 2);
             }
         }
-        
+
         // Level 3: 返回空状态
         metrics.recordFallback("state", 3);
         return TaskState.empty();
     }
-    
+
     /**
      * RAG 检索降级
      */
     public List<CodeChunk> searchWithFallback(
-            String query, 
-            SearchContext context, 
-            int topK) {
-        
+        String query,
+        SearchContext context,
+        int topK) {
+
         // Level 1: 完整混合检索
         if (circuitBreaker.isPostgresHealthy() && circuitBreaker.isMongoHealthy()) {
             try {
@@ -3089,7 +3091,7 @@ public class ContextDegradationPolicy {
                 metrics.recordFallback("rag", 1);
             }
         }
-        
+
         // Level 2: 仅结构化/词法检索
         if (circuitBreaker.isPostgresHealthy()) {
             try {
@@ -3098,7 +3100,7 @@ public class ContextDegradationPolicy {
                 metrics.recordFallback("rag", 2);
             }
         }
-        
+
         // Level 3: 仅文本块检索
         if (circuitBreaker.isMongoHealthy()) {
             try {
@@ -3107,7 +3109,7 @@ public class ContextDegradationPolicy {
                 metrics.recordFallback("rag", 3);
             }
         }
-        
+
         // Level 4: 跳过 RAG
         metrics.recordFallback("rag", 4);
         return Collections.emptyList();
@@ -3158,29 +3160,29 @@ flowchart TB
  */
 @Service
 public class StateConsistencyGuard {
-    
+
     /**
      * 原子性状态更新
      */
     @Transactional
     public void updateStateAtomically(
-            String threadId, 
-            StateDelta delta,
-            long expectedEpoch) {
-        
+        String threadId,
+        StateDelta delta,
+        long expectedEpoch) {
+
         // 1. 检查 Epoch
         long currentEpoch = getCurrentEpoch(threadId);
         if (currentEpoch != expectedEpoch) {
             throw new OptimisticLockException(
                 "State was modified by another request. " +
-                "Expected epoch: " + expectedEpoch + 
-                ", current: " + currentEpoch
+                    "Expected epoch: " + expectedEpoch +
+                    ", current: " + currentEpoch
             );
         }
-        
+
         // 2. 原子更新 (Redis + PostgreSQL 双写)
         long newEpoch = currentEpoch + 1;
-        
+
         // Redis: Shadow Buffer
         String shadowKey = "shadow:" + threadId;
         redisTemplate.execute(new SessionCallback<Object>() {
@@ -3192,9 +3194,9 @@ public class StateConsistencyGuard {
                 return operations.exec();
             }
         });
-        
+
         // PostgreSQL: 异步持久化 (通过 Kafka)
-        kafkaTemplate.send("state-updates", 
+        kafkaTemplate.send("state-updates",
             StateUpdateEvent.builder()
                 .threadId(threadId)
                 .delta(delta)
@@ -3202,7 +3204,7 @@ public class StateConsistencyGuard {
                 .timestamp(Instant.now())
                 .build());
     }
-    
+
     /**
      * 周期性的 Redis-PostgreSQL 同步
      */
@@ -3210,11 +3212,11 @@ public class StateConsistencyGuard {
     public void syncRedisToPostgres() {
         // 扫描所有活跃 Session
         Set<String> activeThreads = getActiveThreads();
-        
+
         for (String threadId : activeThreads) {
             long redisEpoch = getRedisEpoch(threadId);
             long pgEpoch = getPostgresEpoch(threadId);
-            
+
             if (redisEpoch > pgEpoch) {
                 // Redis 领先，需要同步到 PostgreSQL
                 syncToPostgres(threadId, pgEpoch, redisEpoch);
@@ -3459,83 +3461,83 @@ package context.v1;
 import "google/protobuf/timestamp.proto";
 
 service ContextService {
-    // 获取完整上下文
-    rpc GetContext(GetContextRequest) returns (GetContextResponse);
-    
-    // 保存上下文更新
-    rpc SaveContext(SaveContextRequest) returns (SaveContextResponse);
-    
-    // 获取 Prefix 缓存提示
-    rpc GetPrefixHint(GetPrefixHintRequest) returns (GetPrefixHintResponse);
-    
-    // 代码检索
-    rpc SearchCode(SearchCodeRequest) returns (SearchCodeResponse);
-    
-    // 健康检查
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  // 获取完整上下文
+  rpc GetContext(GetContextRequest) returns (GetContextResponse);
+
+  // 保存上下文更新
+  rpc SaveContext(SaveContextRequest) returns (SaveContextResponse);
+
+  // 获取 Prefix 缓存提示
+  rpc GetPrefixHint(GetPrefixHintRequest) returns (GetPrefixHintResponse);
+
+  // 代码检索
+  rpc SearchCode(SearchCodeRequest) returns (SearchCodeResponse);
+
+  // 健康检查
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
 }
 
 message GetContextRequest {
-    string thread_id = 1;
-    string user_id = 2;
-    string agent_id = 3;
-    string user_message = 4;
-    int32 window_size = 5;
-    int32 token_budget = 6;
-    bool enable_rag = 7;
-    int32 rag_top_k = 8;
-    repeated MediaItem media_items = 9;
+  string thread_id = 1;
+  string user_id = 2;
+  string agent_id = 3;
+  string user_message = 4;
+  int32 window_size = 5;
+  int32 token_budget = 6;
+  bool enable_rag = 7;
+  int32 rag_top_k = 8;
+  repeated MediaItem media_items = 9;
 }
 
 message GetContextResponse {
-    string system_prompt = 1;              // System Message 内容
-    repeated ChatMessage messages = 2;     // Message List (历史 + 当前)
-    int32 total_tokens = 3;
-    int32 estimated_prefix_tokens = 4;     // 预估可缓存的前缀长度
-    repeated CodeChunk rag_results = 5;
+  string system_prompt = 1;              // System Message 内容
+  repeated ChatMessage messages = 2;     // Message List (历史 + 当前)
+  int32 total_tokens = 3;
+  int32 estimated_prefix_tokens = 4;     // 预估可缓存的前缀长度
+  repeated CodeChunk rag_results = 5;
 }
 
 message ChatMessage {
-    string role = 1;       // "system", "user", "assistant"
-    string content = 2;
+  string role = 1;       // "system", "user", "assistant"
+  string content = 2;
 }
 
 message CodeChunk {
-    string chunk_id = 1;
-    string file_path = 2;
-    int32 start_line = 3;
-    int32 end_line = 4;
-    string code = 5;
-    string language = 6;
-    ChunkType chunk_type = 7;
-    float relevance_score = 8;
+  string chunk_id = 1;
+  string file_path = 2;
+  int32 start_line = 3;
+  int32 end_line = 4;
+  string code = 5;
+  string language = 6;
+  ChunkType chunk_type = 7;
+  float relevance_score = 8;
 }
 
 enum ChunkType {
-    CHUNK_TYPE_UNKNOWN = 0;
-    CHUNK_TYPE_COMPLETE_FUNCTION = 1;
-    CHUNK_TYPE_PARTIAL_FUNCTION = 2;
-    CHUNK_TYPE_CLASS_SUMMARY = 3;
-    CHUNK_TYPE_IMPORTS = 4;
+  CHUNK_TYPE_UNKNOWN = 0;
+  CHUNK_TYPE_COMPLETE_FUNCTION = 1;
+  CHUNK_TYPE_PARTIAL_FUNCTION = 2;
+  CHUNK_TYPE_CLASS_SUMMARY = 3;
+  CHUNK_TYPE_IMPORTS = 4;
 }
 
 // 多媒体文件定义
 message MediaItem {
-    string media_id = 1;
-    MediaType media_type = 2;
-    string file_name = 3;
-    string gcs_path = 4;              // GCS 存储路径
-    string description = 5;           // 图片/文档的文本描述
-    int32 round_number = 6;           // 关联的对话轮次
-    bool is_current_round = 7;        // 是否为当前轮上传
+  string media_id = 1;
+  MediaType media_type = 2;
+  string file_name = 3;
+  string gcs_path = 4;              // GCS 存储路径
+  string description = 5;           // 图片/文档的文本描述
+  int32 round_number = 6;           // 关联的对话轮次
+  bool is_current_round = 7;        // 是否为当前轮上传
 }
 
 enum MediaType {
-    MEDIA_TYPE_UNKNOWN = 0;
-    MEDIA_TYPE_IMAGE = 1;             // 用户上传的图片
-    MEDIA_TYPE_DOCUMENT = 2;          // 用户上传的文档 (PDF/Word/Excel)
-    MEDIA_TYPE_CODE_FILE = 3;         // 用户上传的代码文件
-    MEDIA_TYPE_GENERATED_IMAGE = 4;   // LLM 生成的图片
+  MEDIA_TYPE_UNKNOWN = 0;
+  MEDIA_TYPE_IMAGE = 1;             // 用户上传的图片
+  MEDIA_TYPE_DOCUMENT = 2;          // 用户上传的文档 (PDF/Word/Excel)
+  MEDIA_TYPE_CODE_FILE = 3;         // 用户上传的代码文件
+  MEDIA_TYPE_GENERATED_IMAGE = 4;   // LLM 生成的图片
 }
 ```
 

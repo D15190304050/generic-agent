@@ -51,13 +51,12 @@
 2. [系统边界与集成架构](#2-系统边界与集成架构)
 3. [物理架构设计](#3-物理架构设计)
 4. [Prefix Cache 与 Prompt 布局策略](#4-prefix-cache-与-prompt-布局策略)
-5. [核心模块详细规格](#6-核心模块详细规格)
-   - [6.12 Code Index 系统设计](#612-code-index-系统设计)
-6. [数据流与时序分析](#7-数据流与时序分析)
-7. [性能模型与容量规划](#8-性能模型与容量规划)
-8. [可靠性与容错设计](#9-可靠性与容错设计)
-9. [有效性论证与 ROI 分析](#10-有效性论证与-roi-分析)
-10. [演进路线与风险缓解](#11-演进路线与风险缓解)
+5. [核心模块详细规格](#5-核心模块详细规格)
+6. [数据流与时序分析](#6-数据流与时序分析)
+7. [性能模型与容量规划](#7-性能模型与容量规划)
+8. [可靠性与容错设计](#8-可靠性与容错设计)
+9. [有效性论证与 ROI 分析](#9-有效性论证与-roi-分析)
+10. [演进路线与风险缓解](#10-演进路线与风险缓解)
 
 ---
 
@@ -1068,7 +1067,7 @@ graph TB
     subgraph Processing ["处理层"]
         DocParser["文档解析器<br/>Apache Tika"]
         VisionEncoder["视觉编码器<br/>GPT-4V / Gemini Vision"]
-        CodeIndex["Code Index Service<br/>(见第6.12节)"]
+        CodeIndex["Code Index Service<br/>(见第5.12节)"]
     end
 
     subgraph Storage ["存储层"]
@@ -1391,9 +1390,9 @@ public class DecayEngine {
 
 ---
 
-## 6. 核心模块详细规格
+## 5. 核心模块详细规格
 
-### 6.1 模块依赖关系
+### 5.1 模块依赖关系
 
 ```mermaid
 graph TB
@@ -1480,7 +1479,7 @@ graph TB
     class Redis,PG,Mongo,GCS,LLM External;
 ```
 
-### 6.2 各模块详细规格
+### 5.2 各模块详细规格
 | 模块 | 职责 | 输入 | 输出 | 依赖 | 预估延迟 |
 |-----|-----|-----|-----|-----|-----|
 | **Context Orchestrator** | 统一调度入口 | GetContextRequest | ContextResponse | 所有子模块 | P99 < 50ms |
@@ -1496,7 +1495,7 @@ graph TB
 
 State Overlay 以 PostgreSQL 中的基准状态为真相来源，叠加 Redis Shadow Buffer 中的未持久化事件，按 Sync-Epoch 顺序合并为可用的任务状态。它只处理结构化状态，不包含对话摘要，因此与 B4 的摘要职责不重叠。
 
-### 6.3 Context Orchestrator 详细设计
+### 5.3 Context Orchestrator 详细设计
 **职责与边界**：
 - 统一调度 B1/B2a/B4/B6 的加载、NQR 重写、状态合并与 RAG 检索
 - 负责 Token 预算与降级策略编排，不直接实现子引擎逻辑
@@ -1729,7 +1728,7 @@ public class ContextOrchestrator {
 
 ---
 
-### 6.4 NQR Engine 详细设计
+### 5.4 NQR Engine 详细设计
 **职责与边界**：
 - 解决代词指代、上下文省略与实体对齐
 - 将用户问题改写为可检索的结构化查询
@@ -1799,9 +1798,9 @@ public class NQREngine {
 }
 ```
 
-### 6.5 State Overlay Engine 详细设计
+### 5.5 State Overlay Engine 详细设计
 
-#### 6.5.1 Shadow Event 与 Shadow Buffer 说明
+#### 5.5.1 Shadow Event 与 Shadow Buffer 说明
 **Shadow Event** 是对“结构化任务状态”的增量变更记录，目的是在主状态尚未持久化时，仍然保证 **Read-after-Write** 一致性。它只包含可合并的结构化字段，不承载对话文本或摘要。
 
 **Shadow Buffer** 是每个 thread 在 Redis 中的事件缓冲区（如 `shadow:{thread_id}`），保存近期的 Shadow Event 列表，用于在读取上下文时做“基准状态 + 增量事件”的即时合并。
@@ -1885,7 +1884,7 @@ public class StateOverlayEngine {
 }
 ```
 
-### 6.6 Decay Engine 详细设计
+### 5.6 Decay Engine 详细设计
 **职责与边界**：
 - 对多模态内容与附件描述进行压缩
 - 在 Token 预算不足时做裁剪与摘要
@@ -1944,7 +1943,7 @@ public class DecayEngine {
 }
 ```
 
-### 6.7 Prompt Assembler 详细设计
+### 5.7 Prompt Assembler 详细设计
 **职责与边界**：
 - 构建 System Message 与 Message List
 - 保证 B1/B2a 稳定格式，提升 Prefix Cache 命中
@@ -2002,7 +2001,7 @@ public class PromptAssembler {
 }
 ```
 
-### 6.8 Prefix Cache Manager 详细设计
+### 5.8 Prefix Cache Manager 详细设计
 **职责与边界**：
 - 计算 B1/B2a/B4/B6 前缀哈希
 - 管理 Redis 中的 PrefixHint 与命中统计
@@ -2067,7 +2066,7 @@ public class PrefixCacheManager {
 }
 ```
 
-### 6.9 Cache Monitor 详细设计
+### 5.9 Cache Monitor 详细设计
 **职责与边界**：
 - 采集各云 LLM 返回的 cached_tokens
 - 统一输出 CacheStats 供容量与成本评估使用
@@ -2124,7 +2123,7 @@ public class CacheMonitor {
 }
 ```
 
-### 6.10 Document Processor 详细设计
+### 5.10 Document Processor 详细设计
 **职责与边界**：
 - 解析上传文档为文本块
 - 生成元数据与索引，供 Code Index Service 检索复用
@@ -2189,7 +2188,7 @@ public class DocumentProcessor {
 }
 ```
 
-### 6.11 Image Processor 详细设计
+### 5.11 Image Processor 详细设计
 **职责与边界**：
 - 将用户上传与 LLM 生成图片生成文本描述
 - 生成可检索的描述块并存储
@@ -2254,9 +2253,9 @@ public class ImageProcessor {
 ```
 
 ---
-### 6.12 Code Index 系统设计
+### 5.12 Code Index 系统设计
 
-#### 6.12.1 设计目标
+#### 5.12.1 设计目标
 
 Code Index 系统需要实现：
 
@@ -2266,7 +2265,7 @@ Code Index 系统需要实现：
 4. **结构感知**：理解代码结构（函数、类、模块）
 5. **多语言支持**：支持 Java, Python, TypeScript, Go 等主流语言
 
-#### 6.12.2 整体架构
+#### 5.12.2 整体架构
 ```mermaid
 graph TB
     classDef Input fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
@@ -2341,7 +2340,7 @@ graph TB
     class QueryParser,LexicalSearch,SymbolSearch,Reranker Query;
 ```
 
-#### 6.12.3 Code Index Service 详细设计
+#### 5.12.3 Code Index Service 详细设计
 **职责与边界**：
 - 处理用户上传、用户输入与 LLM 生成的代码
 - 进行 AST 解析、结构化索引与文本检索
@@ -2422,7 +2421,7 @@ public class CodeIndexService {
 }
 ```
 
-#### 6.12.4 AST 解析与切片
+#### 5.12.4 AST 解析与切片
 
 ```java
 /**
@@ -2523,7 +2522,7 @@ public class TreeSitterASTParser {
 }
 ```
 
-#### 6.12.5 语义切片策略
+#### 5.12.5 语义切片策略
 
 ```java
 /**
@@ -2622,7 +2621,7 @@ public class SemanticCodeChunker {
 }
 ```
 
-#### 6.12.6 全文索引与结构化索引
+#### 5.12.6 全文索引与结构化索引
 
 文本块写入后同步生成两类索引：PostgreSQL 全文检索与结构化符号索引，用于在没有向量模型的情况下保持高召回。
 
@@ -2648,7 +2647,7 @@ CREATE INDEX code_identifiers_tokens_idx ON code_identifiers USING GIN (identifi
 CREATE INDEX code_identifiers_trgm_idx ON code_identifiers USING GIN (identifier gin_trgm_ops);
 ```
 
-#### 6.12.7 模糊匹配与 CamelCase 分词
+#### 5.12.7 模糊匹配与 CamelCase 分词
 
 为支持用户自然语言查询匹配代码标识符（如 `"get user name"` → `getUsername`），我们实现了专门的分词和索引策略：
 拼写容错由 trigram 相似度与编辑距离阈值共同保障，可覆盖 `"takeItem"` 与 `"takeItems"` 等轻微拼写差异。
@@ -2724,7 +2723,7 @@ ON code_identifiers USING GIN (identifier_tokens);
 | `"calculate total"` | `["calculate", "total"]` | `calculateTotal`, `calc_total`, `computeTotalAmount` |
 | `"http request"` | `["http", "request"]` | `httpRequest`, `HttpRequestHandler`, `http_request_util` |
 
-#### 6.12.8 混合检索（全文 + 结构）
+#### 5.12.8 混合检索（全文 + 结构）
 
 ```java
 /**
@@ -2794,9 +2793,9 @@ public class HybridSearchEngine {
 
 ---
 
-## 7. 数据流与时序分析
+## 6. 数据流与时序分析
 
-### 7.1 完整请求生命周期
+### 6.1 完整请求生命周期
 Shadow Buffer 是每个 thread 的事件缓冲区，用来保存尚未持久化的状态增量（如槽位更新、任务进度变化）。State Overlay 会先读取 PostgreSQL 中的基准状态，再按事件时间序合并 Shadow Buffer，得到当前轮可用的结构化状态，用于 B5 组装。
 ```mermaid
 sequenceDiagram
@@ -2873,7 +2872,7 @@ sequenceDiagram
     AS->>AS: Release Session Lock
 ```
 
-### 7.2 延迟分解分析
+### 6.2 延迟分解分析
 | 阶段 | 操作 | P50 | P95 | P99 | 优化策略 |
 |-----|-----|-----|-----|-----|---------|
 | **数据获取** | B6 Redis GET | 1ms | 3ms | 5ms | Pipeline |
@@ -2895,7 +2894,7 @@ sequenceDiagram
 
 > LSH 用于将稳定的前缀哈希映射到固定桶，快速筛出可能命中的缓存候选，减少全量比对成本。
 
-#### 7.2.1 LSH 前缀桶策略
+#### 6.2.1 LSH 前缀桶策略
 LSH 用于对 Prefix Hash 做近似分桶，降低 PrefixHint 的扫描与比对成本。系统采用固定桶数与短哈希前缀作为桶键，将可能命中的候选聚集到同一桶内，再执行精确哈希比对。
 **在本系统中的作用**：
 - **加速前缀匹配**：Prefix Cache Manager 需要从 Redis 中找到“最相似的前缀”。如果全量扫描，每次请求的比较成本会随 PrefixHint 数量线性增长。
@@ -2924,8 +2923,8 @@ flowchart TB
 ```
 ---
 
-## 8. 性能模型与容量规划
-### 8.1 云 API Prefix Cache 时延模型（阶段一）
+## 7. 性能模型与容量规划
+### 7.1 云 API Prefix Cache 时延模型（阶段一）
 
 阶段一仅评估时延收益，成本评估在后续阶段补充。
 
@@ -2938,7 +2937,7 @@ Prefill_cached = Prefill_uncached × (1 - cache_hit)
 |-----|--------|---------|------|
 | 无缓存 | T<sub>prefill</sub> | T<sub>rtt</sub> | T<sub>rtt</sub> + T<sub>prefill</sub> + T<sub>decode</sub> |
 | 命中率 h | T<sub>prefill</sub> × (1 - h) | T<sub>rtt</sub> | T<sub>rtt</sub> + T<sub>prefill</sub> × (1 - h) + T<sub>decode</sub> |
-### 8.2 Prefix Cache 复用率模型
+### 7.2 Prefix Cache 复用率模型
 
 ```
 Prefix 复用率 = P(B1 match) × P(B2a match | B1) × P(B4 match | B1,B2a) × P(B6 match | B1,B2a,B4)
@@ -2949,7 +2948,7 @@ Prefix 复用率 = P(B1 match) × P(B2a match | B1) × P(B4 match | B1,B2a) × P
 - 使用真实压测数据回填 P(Bx match | ...) 与整体复用率
 ```
 
-### 8.3 容量规划
+### 7.3 容量规划
 
 | 资源类型 | 单节点容量 | 1M DAU 所需 | 备注 |
 |---------|----------|------------|-----|
@@ -2962,9 +2961,9 @@ Prefix 复用率 = P(B1 match) × P(B2a match | B1) × P(B4 match | B1,B2a) × P
 
 ---
 
-## 9. 可靠性与容错设计
+## 8. 可靠性与容错设计
 
-### 9.1 故障场景与恢复策略
+### 8.1 故障场景与恢复策略
 
 ```mermaid
 graph TB
@@ -3003,7 +3002,7 @@ graph TB
     F6 --> R6 --> FB6
 ```
 
-### 9.2 多级降级协议
+### 8.2 多级降级协议
 
 多级降级协议的目标是在核心依赖异常时保持对话可用性，并尽量保留一致的上下文结构。
 
@@ -3136,7 +3135,7 @@ public class ContextDegradationPolicy {
 }
 ```
 
-### 9.3 数据一致性保证
+### 8.3 数据一致性保证
 数据一致性以 Sync-Epoch 为核心，保证同一线程的状态更新具备顺序性与原子性。
 
 **Shadow Buffer 定义**：
@@ -3253,13 +3252,13 @@ public class StateConsistencyGuard {
 
 ---
 
-## 10. 有效性论证与 ROI 分析
+## 9. 有效性论证与 ROI 分析
 
 本章论证 Context Service 确实能够满足四大设计目标，并分析其投资回报率。
 
-### 10.1 设计目标达成论证
+### 9.1 设计目标达成论证
 
-#### 10.1.1 目标一：长效记忆稳定性（30+ 轮对话）
+#### 9.1.1 目标一：长效记忆稳定性（30+ 轮对话）
 
 **问题**：LLM 在长对话中出现"中间失忆"和"逻辑漂移"。
 
@@ -3316,7 +3315,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 - 人工标注"逻辑漂移"发生率
 - 对比"Summary of Summary" vs "独立摘要拼接"的信息保留率
 
-#### 10.1.2 目标二：极致低延迟（TTFT < 350ms）
+#### 9.1.2 目标二：极致低延迟（TTFT < 350ms）
 
 **问题**：长 Prompt 的 Prefill 阶段耗时过长。
 
@@ -3338,7 +3337,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 - 监控 OpenAI API 返回的 `cached_tokens` 字段
 - 对比相同 Prompt 连续请求的 TTFT
 
-#### 10.1.3 目标三：百万级高并发
+#### 9.1.3 目标三：百万级高并发
 
 **问题**：单点瓶颈限制系统吞吐量。
 
@@ -3356,7 +3355,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 - 压力测试：逐步增加并发数，观察吞吐量和延迟
 - 扩容测试：增加 Orchestrator Pod 数量，验证线性扩展
 
-#### 10.1.4 目标四：高稳定性与容错
+#### 9.1.4 目标四：高稳定性与容错
 
 **问题**：组件故障导致服务不可用。
 
@@ -3375,7 +3374,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 - 混沌工程测试：随机杀死组件，验证自动恢复
 - 故障注入：模拟 Redis/PG 不可用，验证降级逻辑
 
-### 10.2 用户体验收益评估
+### 9.2 用户体验收益评估
 
 | 指标 | 现状 | 目标 | 说明 |
 |-----|-----|-----|-----|
@@ -3384,7 +3383,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 | **用户重复表达次数** | 2.0 次/任务 | 1.2 次/任务 | 关键信息复用更稳定 |
 | **可解释性反馈** | 低 | 中高 | B5 检索片段可追溯来源 |
 
-### 10.3 与业界实践的对比
+### 9.3 与业界实践的对比
 
 | 方案 | 典型代表 | 核心思路 | 优势 | 劣势 |
 |-----|---------|---------|-----|-----|
@@ -3400,8 +3399,8 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 
 ---
 
-## 11. 演进路线与风险缓解
-### 11.1 六个月演进计划
+## 10. 演进路线与风险缓解
+### 10.1 六个月演进计划
 
 ```mermaid
 gantt
@@ -3443,7 +3442,7 @@ gantt
 | W20 | 可观测性完善 | 指标与告警可用 |
 | W24 | 生产灰度 | 10% 流量运行 |
 
-### 11.2 关键风险与缓解措施
+### 10.2 关键风险与缓解措施
 
 | 风险类别 | 风险描述 | 概率 | 影响 | 缓解措施 |
 |---------|---------|-----|-----|---------|
@@ -3454,7 +3453,7 @@ gantt
 | **进度风险** | 开发时间不足 | 中 | 中 | AI 辅助开发 (Cursor)，聚焦 MVP |
 | | 评审意见多轮迭代 | 中 | 中 | 提前沟通，准备充分论据 |
 
-### 11.3 成功指标
+### 10.3 成功指标
 
 | 指标类型 | 指标名称 | 基线 | 上线目标 | 长期目标 |
 |---------|---------|-----|---------|---------|
@@ -3606,7 +3605,7 @@ enum MediaType {
 1. 统一全文版本号为 0.0.1，作者信息为 Dino Stark。
 2. 更新物理架构与模块依赖关系，存储层与检索链路使用 PostgreSQL 与 MongoDB。
 3. 完善核心引擎职责说明，补充 State Overlay 与 Shadow Buffer 的原理描述。
-4. 修正 6.2 模块规格中的列名与依赖项，统一为预估延迟与当前存储依赖。
+4. 修正 5.2 模块规格中的列名与依赖项，统一为预估延迟与当前存储依赖。
 5. 修订数据流时序图与 RAG 检索流程，替换向量检索为词法/符号检索。
 6. 补充网络 I/O 与 LSH 说明，更新延迟分解模型。
 7. 将阶段一性能模型调整为时延评估，移除成本计算细节。

@@ -15,13 +15,13 @@
 
 > **Context Service 的核心职责是为每次 LLM 调用组装最优的 System Prompt 和 Message List。**
 >
-> 它通过**确定性的分层布局**（B1-B5）将静态指令、用户画像、历史摘要、近景对话、业务状态、上传文件描述和动态检索结果有序组织，确保：
+> 它通过**确定性的分层布局**（B1-B6，其中 B2 拆分为 B2a/B2b）将静态指令、用户画像、历史摘要、近景对话、业务状态、上传文件描述和动态检索结果有序组织，确保：
 > 1. **长效记忆**：历史信息不会因窗口限制丢失，通过摘要+近景对话双轨制保持语义连贯
 > 2. **低延迟**：稳定的前缀结构触发云 API 的 Prefix Cache，减少推理前的预载时间
 > 3. **一致性**：每轮对话的 Prompt 都基于最新状态实时组装，避免"幻觉"和"遗忘"
 > 4. **多模态支持**：用户上传的文档/图片被解析、索引、描述，可在后续对话中按需检索引用
 >
-> B1-B5 的定义见 [4.1.4 B1-B5 模块说明](#414-b1-b5-模块说明)。
+> B1-B6 的定义见 [4.1.4 B 分层模块说明](#414-b-分层模块说明)。
 ### 核心设计目标
 
 本系统围绕以下四大核心目标进行设计：
@@ -29,7 +29,7 @@
 | 目标 | 描述 | 技术手段 |
 |-----|------|---------|
 | **🧠 长效记忆稳定性** | 支持 30+ 轮多模态对话。通过 **NQR (意图重写器)** 实现跨轮次实体对齐，解决 LLM 在长文本末尾的"逻辑漂移"与"中间失忆"问题。 | NQR Engine, B4 Summary, State Overlay |
-| **⚡ 低延迟 (TTFT)** | 基于 **Prefix Caching** 对齐策略。通过确定性的 Prompt Layout 布局，确保 KV Cache 的最大化复用，实现首字秒级回传。 | B1-B5 Layout, Prefix Cache Manager |
+| **⚡ 低延迟 (TTFT)** | 基于 **Prefix Caching** 对齐策略。通过确定性的 Prompt Layout 布局，确保 KV Cache 的最大化复用，实现首字秒级回传。 | B1-B6 Layout (B2a/B2b), Prefix Cache Manager |
 | **🚀 百万级高并发** | Orchestrator 计算节点完全无状态，支持按需水平扩展；配合分布式原子锁与一致性哈希，确保海量请求下的事务一致性。 | Stateless Orchestrator, Redis Lock |
 | **🛡️ 高稳定性与容错** | 系统具备"自愈"能力。通过 **Epoch Filter** 解决异步数据空洞，利用 **Multi-level Fallback** 在核心组件故障时通过降级协议保障核心服务不断联。 | Shadow Buffer, Multi-level Fallback |
 
@@ -39,7 +39,7 @@
 
 1. **独立的 Context Service 微服务**：将上下文管理从 ai-service 中解耦，形成独立的可复用服务
 2. **云 API Prefix Cache 深度集成**：充分利用 OpenAI/Gemini/Claude 内置缓存，无需自建 GPU 即可获得成本优化
-3. **确定性 Prompt 布局策略**：通过 B1-B5 分层结构最大化 Prefix Cache 命中率
+3. **确定性 Prompt 布局策略**：通过 B1-B6 分层结构最大化 Prefix Cache 命中率
 4. **智能 Code Index 系统**：基于 Tree-sitter 的增量 AST 解析 + PostgreSQL 全文检索 + MongoDB 文本索引 + 结构化符号检索
 5. **多模态文件处理**：支持文档解析（PDF/Word/Excel）、图片描述生成（Vision API）、生成图片存储与引用
 
@@ -140,8 +140,8 @@ graph TB
 
 | 能力 | 描述 | 输入 | 输出到 Prompt |
 |-----|-----|-----|--------------|
-| **📝 Prompt 组装** | 将各模块按最优顺序组装 | 所有 B1-B5 块 | 完整的 System + Messages |
-| **💬 历史管理** | 摘要 + 近景对话双轨制 | 对话历史 | B3 (摘要) + B4 (近景) |
+| **📝 Prompt 组装** | 将各模块按最优顺序组装 | 所有 B1/B2a/B2b/B3/B4/B5/B6 块 | 完整的 System + Messages |
+| **💬 历史管理** | 摘要 + 近景对话双轨制 | 对话历史 | B4 (摘要) + B6 (近景) |
 | **🔍 代码/文档检索** | 语义 + 关键词混合搜索 | 用户查询 | B5 (检索结果) |
 | **🖼️ 图片处理** | Vision API 生成文本描述 | 用户上传图片 | B5 (附件描述) |
 | **📄 文档解析** | 提取文本并建立索引 | PDF/Word/Excel | B5 (可检索) |
@@ -179,7 +179,7 @@ flowchart LR
         S2["2️⃣ 检索代码/文档<br/>(PostgreSQL/MongoDB)"]
         S3["3️⃣ 处理图片描述<br/>(Vision API)"]
         S4["4️⃣ 解析文档<br/>(Tika)"]
-        S5["5️⃣ 组装 B1-B5"]
+        S5["5️⃣ 组装 B1-B6"]
     end
 
     subgraph Storage ["存储层"]
@@ -242,8 +242,8 @@ graph TB
     subgraph NewService ["Context Service (新建)"]
         subgraph ContextSvc ["context-service"]
             CtxOrch["Context Orchestrator"]
-            PrefixMgr["Prefix Cache Manager"]
-            CacheMonitor["Cache Metrics Monitor"]
+            PrefixMgr["Prefix Cache Manager (LSH Bucket Locator)"]
+            CacheMonitor["Cache Monitor"]
             CodeIdx["Code Index Service"]
             StateMgr["State Overlay Engine"]
         end
@@ -336,7 +336,7 @@ Context Service 作为独立微服务部署，**核心职责是组装优化的 P
 | 组件 | 职责 | 对外接口 |
 |-----|-----|---------|
 | **Context Orchestrator** | 上下文组装与调度 | `ContextService.GetContext` |
-| **Prompt Assembler** | B1-B5 Prompt 组装 | (内部模块) |
+| **Prompt Assembler** | B1-B6 Prompt 组装 | (内部模块) |
 | **Prefix Cache Manager** | 前缀缓存提示与命中信息管理 | `ContextService.GetPrefixHint` |
 | **Code Index Service** | 代码索引与检索 | `CodeService.SearchCode` |
 | **State Overlay Engine** | 状态一致性管理 | `StateService.MergeState` |
@@ -354,9 +354,9 @@ sequenceDiagram
     activate CS
     
     par 并行获取
-        CS->>Redis: Get B4 (Recent History)
+    CS->>Redis: Get B6 (Recent History)
         CS->>Redis: Get Shadow Buffer
-        CS->>CS: Get B1/B2 from Local Cache
+        CS->>CS: Get B1/B2a from Local Cache
     end
     
     CS->>CS: State Overlay Merge
@@ -377,7 +377,7 @@ sequenceDiagram
     deactivate LLM
     
     AS->>CS: SaveContext(thread_id, response, state_delta)
-    CS->>Redis: Update B4 & Shadow Buffer
+    CS->>Redis: Update B6 & Shadow Buffer
     CS->>CS: Async: Persist to PostgreSQL
 ```
 
@@ -456,7 +456,7 @@ graph TB
 ```
 
 **异步处理层职责**：
-- 摘要生成与更新：对 B4 近景对话按窗口生成 B3 摘要并回写数据库
+- 摘要生成与更新：对 B6 近景对话按窗口生成 B4 摘要并回写数据库
 - 代码/文档索引：解析上传文件，生成结构化片段写入 MongoDB 与 PostgreSQL
 - 成本与性能采样：收集缓存命中率、检索命中率等指标，供容量规划使用
 
@@ -480,12 +480,12 @@ graph TB
                 NQR["NQR Engine (意图重写)"]
                 Overlay["State Overlay Engine"]
                 Decay["Decay Engine (压缩)"]
-                Assembler["Prompt Assembler (B1-B5)"]
+                Assembler["Prompt Assembler (B1-B6)"]
             end
             
-            PrefixMgr["Prefix Cache Manager"]
-            CacheMonitor["Cache Metrics Monitor"]
-            CodeIndex["Code Index Engine"]
+            PrefixMgr["Prefix Cache Manager (LSH Bucket Locator)"]
+            CacheMonitor["Cache Monitor"]
+            CodeIndex["Code Index Service"]
         end
 
         subgraph Adapter ["适配器层"]
@@ -530,16 +530,15 @@ graph TB
 
 | 模块 | 关键职责 | 关键输出 |
 |-----|---------|---------|
-| **Context Orchestrator** | 并行拉取 B1-B5、调度子引擎、控制 Token 预算 | ContextResponse |
+| **Context Orchestrator** | 并行拉取 B1/B2a/B4/B6，调度子引擎、控制 Token 预算 | ContextResponse |
 | **NQR Engine** | 重写查询、补全指代、对齐实体 | RewrittenQuery |
 | **State Overlay Engine** | 合并基准状态与增量事件，输出一致状态 | MergedState |
 | **Decay Engine** | 对多模态内容与摘要块进行压缩裁剪 | CompressedBlocks |
 | **Prompt Assembler** | 按固定布局构建 System 与 Messages | AssembledPrompt |
-| **Prefix Cache Manager** | 生成前缀指纹、记录缓存统计 | PrefixHint |
-| **Cache Metrics Monitor** | 采集 cached_tokens 与命中率 | CacheStats |
-| **Code Index Engine** | 建索引与检索，输出可引用片段 | RetrievedChunks |
+| **Prefix Cache Manager** | 生成前缀指纹、记录缓存统计（含 LSH Bucket Locator） | PrefixHint |
+| **Cache Monitor** | 采集 cached_tokens 与命中率 | CacheStats |
+| **Code Index Service** | 建索引与检索，输出可引用片段 | RetrievedChunks |
 
-<!-- 这里的名称和后门讲解详细模块时的名称对不上，你要统一一下命名，否则会有歧义，要保证绘图、表格、文字描述里的命名是统一的，代码里可以有另外的命名规范，但也只不过是删掉了空格才对 -->
 ---
 
 ## 4. Prompt 布局策略与 Prefix Cache
@@ -548,58 +547,64 @@ graph TB
 
 #### 4.1.1 Message 结构设计
 
-Prompt 只分为两块：**System Prompt** 与 **Message List**。System Prompt 仅包含 B1/B2；Message List 由 B3 历史摘要、B4 近景对话与当前用户消息构成，当前用户消息内包含 B5 动态上下文与用户问题。
+Prompt 只分为两块：**System Message** 与 **Message List**。**B 分层模块全部包含在这两块中**，其中：
+- **System Message**：仅承载稳定、可缓存的内容（B1 + B2a）。
+- **Message List**：承载随对话变化的内容（B4 摘要、B6 近景对话）与当前用户消息（B5 检索上下文 + B3 任务状态 + B2b 会话内画像/情绪 + 原始用户问题）。
 
-<!-- 这里不对，Prompt里应该包含B1-B5所有内容才对，而不是把我们改写过的内容作为user message传给LLM -->
+> **原则**：B5/B3/B2b 以结构化段落附加到“当前用户消息”，但不会改写用户原始问题；NQR 的重写仅用于检索，不覆盖用户输入，避免语义偏移。
+> **术语说明**：本文中的 System Message 与 System Prompt 同义，均指模型的 system 角色消息。
+
 ```mermaid
 graph TD
-    System["System Prompt<br/>B1: 角色与政策<br/>B2: 用户画像"]
-    Messages["Message List<br/>B3: 历史摘要<br/>B4: 近景对话<br/>B5: 动态上下文与问题"]
+    System["System Message<br/>B1: 角色与政策<br/>B2a: 长期稳定用户画像"]
+    Messages["Message List<br/>B4: 历史摘要<br/>B6: 近景对话<br/>当前用户消息: B5 + B3 + B2b + 用户问题"]
     System --> Messages
 ```
 
-#### 4.1.2 System Prompt 模板
-<!-- 这里也就不对了，实际上就应该只有System Message和Message List，然后System Message里包含了B1-B5的内容 -->
+#### 4.1.2 System Message 模板
 ```
 你是 {agent_name}，负责 {agent_scope}。
 行为边界：{b1_policy}
 
-## 用户画像
-{b2_profile}
+## 用户画像（长期稳定）
+{b2a_profile}
 ```
 
-**示例：完整 Prompt（含 B1-B5，Message List 的最后一条为当前用户消息）**：
+**示例：完整 Prompt（含 B1/B2a/B2b/B3/B4/B5/B6，Message List 的最后一条为当前用户消息）**：
 
 ```
 System Message
 你是 Ninja AI 助手，负责解决编程问题。
 行为边界：遵循安全与合规要求。
 
-## 用户画像
+## 用户画像（长期稳定）
 语言偏好：zh-CN
 订阅级别：Pro
 
 Message List
-[历史摘要]
+[历史摘要/B4]
 用户已完成 React 项目初始化，确认需要处理异步请求取消问题。
 
-[近景对话]
+[近景对话/B6]
 User: 如何在 useEffect 中处理异步操作？
 Assistant: 可以在 useEffect 中封装异步函数并处理清理逻辑。
 
 [当前用户消息]
-## 相关参考
+## 相关参考（B5）
 src/App.tsx 中 useEffectHook 的实现片段
 
-## 当前状态
+## 当前任务状态（B3）
 用户正在编辑 React 项目，任务状态为“重构副作用逻辑”
+
+## 会话内画像/情绪（B2b）
+用户当前紧急度：高；偏好直接给出可复制代码
 
 ## 附件与工具输出
 当前文件：src/App.tsx
 已选择函数：useEffectHook
 附件描述：上传的错误日志与截图摘要
 
-## 用户问题
+## 用户问题（原始输入）
 那如何取消未完成的请求？
 ```
 
@@ -610,11 +615,11 @@ src/App.tsx 中 useEffectHook 的实现片段
   "messages": [
     {
       "role": "system",
-      "content": "你是 Ninja AI 助手，负责解决编程问题。\n行为边界：遵循安全与合规要求。\n\n## 用户画像\n语言偏好：zh-CN\n订阅级别：Pro"
+      "content": "你是 Ninja AI 助手，负责解决编程问题。\n行为边界：遵循安全与合规要求。\n\n## 用户画像（长期稳定）\n语言偏好：zh-CN\n订阅级别：Pro"
     },
     {
       "role": "user",
-      "content": "[历史背景]\n用户之前询问了 React 组件的生命周期..."
+      "content": "[历史摘要/B4]\n用户之前询问了 React 组件的生命周期..."
     },
     {
       "role": "assistant",
@@ -630,37 +635,28 @@ src/App.tsx 中 useEffectHook 的实现片段
     },
     {
       "role": "user",
-      "content": "## 相关参考\n```javascript\nuseEffect(() => {...})\n```\n\n## 当前状态\n用户正在编辑 React 项目\n\n## 附件与工具输出\n当前文件：src/App.tsx\n已选择函数：useEffectHook\n\n## 用户问题\n那如何取消未完成的请求？"
+      "content": "## 相关参考（B5）\n```javascript\nuseEffect(() => {...})\n```\n\n## 当前任务状态（B3）\n用户正在编辑 React 项目\n\n## 会话内画像/情绪（B2b）\n用户偏好简洁回答\n\n## 附件与工具输出\n当前文件：src/App.tsx\n已选择函数：useEffectHook\n\n## 用户问题（原始输入）\n那如何取消未完成的请求？"
     }
   ]
 }
 ```
 
-#### 4.1.4 B1-B5 模块说明
+#### 4.1.4 B 分层模块说明
 
 | 模块 | 位置 | 内容 | 变化频率 | 缓存策略 |
 |-----|-----|-----|---------|---------|
-| **B1** | System | Agent 的角色定义、能力边界、行为准则 | 永不变化 | 全局共享 |
-| **B2** | System | 静态的用户画像与偏好配置 | 天级更新 | 用户级共享 |
-| **B3** | Message List | 早期对话的分段摘要（异步生成，可重建） | Session 级追加 | Session 级共享 |
-| **B4** | Message List | 近 N 轮真实对话 | 每轮滑动 | 对话级共享 |
-| **B5** | Message List（当前用户消息） | 检索片段、任务状态、附件描述与工具输出 | 每轮变化 | 不缓存 |
-
-<!-- 这里定义错了，我给你看之前的一版正确的定义，我也放在注释里了， -->
-<!-- | 模块 | 位置 | 内容 | 变化频率 | 缓存策略 |
-|-----|-----|-----|---------|---------|
-| **B1** | System | Agent 的角色定义、能力边界、行为准则 | 永不变化 | 全局共享 |
-| **B2a** | System | 静态的（长期稳定的）用户画像 | 天级更新 | 用户级共享 |
+| **B1** | System Message | Agent 的角色定义、能力边界、行为准则 | 永不变化 | 全局共享 |
+| **B2a** | System Message | 静态的（长期稳定的）用户画像 | 天级更新 | 用户级共享 |
 | **B4** | Message List | 早期对话的摘要（由异步 Worker 生成） | Session 级追加 | Session 级共享 |
 | **B6** | Message List | 近 N 轮真实对话 | 每轮滑动 | 对话级共享 |
-| **B5** | User Message | RAG 检索的代码/文档片段 | 每轮变化 | 不缓存 |
-| **B3** | User Message | 当前任务状态（如购物车内容） | 每轮变化 | 不缓存 |
-| **B2b** | User Message | 用户在当前chat thread中的情绪等信息 | 每轮变化 | 不缓存 | -->
+| **B5** | 当前用户消息 | RAG 检索的代码/文档片段 | 每轮变化 | 不缓存 |
+| **B3** | 当前用户消息 | 当前任务状态（如购物车内容） | 每轮变化 | 不缓存 |
+| **B2b** | 当前用户消息 | 线程内临时画像/情绪/偏好信号 | 每轮变化 | 不缓存 |
 
 
-#### 4.1.5 B4 近景对话生成机制
+#### 4.1.5 B6 近景对话生成机制
 
-B4 是近期 N 轮对话的真实消息流，采用滑动窗口机制保证时序与语义连续，并且为 B3 的摘要生成提供稳定输入。
+B6 是近期 N 轮对话的真实消息流，采用滑动窗口机制保证时序与语义连续，并且为 B4 的摘要生成提供稳定输入。
 
 **生成规则**：
 - **窗口大小**：默认保留最近 N 轮对话（N 可配置），按 token 预算动态裁剪。
@@ -674,16 +670,16 @@ flowchart TB
     classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
     NewMsg["新一轮对话消息"]:::input
-    Append["追加到 B4 列表"]:::process
+    Append["追加到 B6 列表"]:::process
     Trim["按窗口裁剪"]:::process
-    RedisB4["Redis: b4:{thread_id}"]:::store
+    RedisB6["Redis: b6:{thread_id}"]:::store
 
-    NewMsg --> Append --> Trim --> RedisB4
+    NewMsg --> Append --> Trim --> RedisB6
 ```
 
-#### 4.1.6 B3 摘要生成机制
+#### 4.1.6 B4 摘要生成机制
 
-B3 摘要由异步任务生成，来源是原始对话而不是已有摘要，保证信息完整与可重建。摘要以分段方式追加，达到阈值后执行合并摘要并归档旧段，避免 B3 无限增长。
+B4 摘要由异步任务生成，来源是原始对话而不是已有摘要，保证信息完整与可重建。摘要以分段方式追加，达到阈值后执行合并摘要并归档旧段，避免 B4 无限增长。
 
 ```mermaid
 flowchart TB
@@ -691,10 +687,10 @@ flowchart TB
     classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
     classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
-    RecentTurns["近景对话 (B4)"]:::input
+    RecentTurns["近景对话 (B6)"]:::input
     SummaryJob["摘要任务<br/>窗口聚合 + 去重"]:::process
     SummaryMerge["摘要合并<br/>按版本归档"]:::process
-    PGSummary["PostgreSQL<br/>B3 Summary"]:::store
+    PGSummary["PostgreSQL<br/>B4 Summary"]:::store
     GCSRaw["GCS<br/>原始对话归档"]:::store
 
     RecentTurns --> SummaryJob --> PGSummary
@@ -729,7 +725,7 @@ sequenceDiagram
 1. **查询理解**：NQR 重写用户意图，抽取实体与关键词  
 2. **多源召回**：  
    - 代码与文档索引：PostgreSQL 全文检索与 MongoDB 文本块索引  
-   - 对话历史检索：对话归档的关键片段检索，补足 B4 未覆盖的细节  
+   - 对话历史检索：对话归档的关键片段检索，补足 B4/B6 未覆盖的细节  
    - 附件与工具结果：当前线程的附件描述与近期工具输出  
 3. **结果融合**：对多路召回结果进行去重、加权融合与上下文裁剪  
 4. **投递到 B5**：仅输出与当前问题强相关的片段
@@ -752,19 +748,19 @@ public class PromptAssembler {
         
         // ========== System Message (高复用区) ==========
         // B1: Agent 职责与边界
-        // B2: 用户画像
+        // B2a: 长期稳定用户画像
         String systemContent = buildSystemMessage(blocks);
         messages.add(ChatMessage.systemMessage(systemContent));
         
         // ========== Message List (对话历史) ==========
-        // B3: 历史摘要（作为早期对话的压缩表示）
+        // B4: 历史摘要（作为早期对话的压缩表示）
         if (blocks.hasHistorySummary()) {
-            messages.add(ChatMessage.userMessage("[历史背景]\n" + blocks.getB3()));
+            messages.add(ChatMessage.userMessage("[历史背景]\n" + blocks.getB4Summary()));
             messages.add(ChatMessage.assistantMessage("好的，我了解了之前的对话背景。"));
         }
         
-        // B4: 近 N 轮真实对话
-        for (Message msg : blocks.getB4Messages()) {
+        // B6: 近 N 轮真实对话
+        for (Message msg : blocks.getB6Messages()) {
             if (msg.isUser()) {
                 messages.add(ChatMessage.userMessage(msg.getContent()));
             } else {
@@ -789,9 +785,9 @@ public class PromptAssembler {
         // B1: Agent 职责（固定模板）
         sb.append(blocks.getB1());
         
-        // B2: 用户画像（格式化输出）
+        // B2a: 用户画像（长期稳定）
         if (blocks.hasUserProfile()) {
-            sb.append("\n\n## 用户信息\n");
+            sb.append("\n\n## 用户画像（长期稳定）\n");
             sb.append("- 语言偏好: ").append(blocks.getUserLanguage()).append("\n");
             sb.append("- 订阅级别: ").append(blocks.getSubscriptionTier()).append("\n");
             // ... 其他固定格式的用户信息
@@ -809,14 +805,21 @@ public class PromptAssembler {
         // B5: RAG 检索结果
         if (blocks.hasRetrievedContext()) {
             sb.append("## 相关参考\n");
-            sb.append(blocks.getB5());
+            sb.append(blocks.getB5Retrieved());
             sb.append("\n\n");
         }
         
-        // 任务状态（B5）
+        // 任务状态（B3）
         if (blocks.hasTaskState()) {
             sb.append("## 当前状态\n");
-            sb.append(blocks.getTaskState());
+            sb.append(blocks.getB3TaskState());
+            sb.append("\n\n");
+        }
+
+        // 会话内画像/情绪（B2b）
+        if (blocks.hasSessionProfile()) {
+            sb.append("## 会话内画像/情绪\n");
+            sb.append(blocks.getB2bSessionProfile());
             sb.append("\n\n");
         }
         
@@ -827,8 +830,8 @@ public class PromptAssembler {
             sb.append("\n\n");
         }
         
-        // 用户问题
-        sb.append("## 用户问题\n");
+        // 用户问题（原始输入）
+        sb.append("## 用户问题（原始输入）\n");
         sb.append(userQuery);
         
         return sb.toString();
@@ -958,7 +961,22 @@ public class GeminiClient {
 ---
 
 ### 4.4 缓存效果监控
-<!-- 没有讲清楚大概的思路和原理，应该先讲思路和原理，再给出代码 -->
+**核心思路**：缓存是否命中只由云厂商返回的 usage 字段决定。Context Service 不做“猜测”，而是把各厂商 usage 统一解析为**可比指标**，再上报到监控与成本模型中。
+
+**监控原则**：
+1. **采集来源统一**：从 OpenAI/Gemini/Claude 响应中解析 `cached_tokens` 与 `prompt_tokens`。
+2. **指标口径一致**：统一计算命中率、节省成本、分层命中（B1/B2a/B4/B6）占比。
+3. **可追溯**：每条请求保留 provider、model、thread_id、prefix_hash，用于回放与优化。
+4. **采样与聚合**：按请求级采样 + 按模型/租户/时间窗口聚合，避免高基数爆炸。
+
+**推荐指标**：
+| 指标 | 说明 | 目标值 |
+|-----|-----|-------|
+| `prefix_cache.hit_rate` | 缓存命中率 | 由压测结果与业务预算确定 |
+| `prefix_cache.cached_tokens` | 命中 token 数 | 持续上升为正向信号 |
+| `prefix_cache.cost_savings` | 累计成本节省 | 由成本模型与计费规则确定 |
+| `prefix_cache.hit_level` | 分层命中级别（B1/B2a/B4/B6） | 逐步提高深层命中占比 |
+
 ```java
 @Service
 public class CacheMetrics {
@@ -980,9 +998,11 @@ public class CacheMetrics {
 }
 ```
 
-#### 4.3.4 Claude 集成
-<!-- 这个小节所处的位置不对，应该是在### 4.4 缓存效果监控的后面 -->
-Claude 通过请求中的 cache_control 指令对稳定前缀进行缓存控制：
+---
+
+### 4.5 Claude 集成
+
+Claude 通过请求中的 `cache_control` 指令对稳定前缀进行缓存控制：
 
 ```java
 @Service
@@ -1000,17 +1020,9 @@ public class ClaudeClient {
 }
 ```
 
-**监控指标**：
-| 指标 | 说明 | 目标值 |
-|-----|-----|-------|
-| `prefix_cache.hit_rate` | 缓存命中率 | 由压测结果与业务预算确定 |
-| `prefix_cache.cost_savings` | 累计成本节省 | 由成本模型与计费规则确定 |
+### 4.6 最佳实践
 
----
-
-### 4.5 最佳实践
-
-#### 4.5.1 保持前缀稳定
+#### 4.6.1 保持前缀稳定
 
 ```
 ✅ 正确做法：
@@ -1024,7 +1036,7 @@ public class ClaudeClient {
 - 在前缀中加入随机 ID
 ```
 
-#### 4.5.2 Token 长度建议
+#### 4.6.2 Token 长度建议
 | 前缀长度 | 缓存触发预期 | 说明 |
 |---------|---------------|-----|
 | < 1024 tokens | 触发不稳定 | 前缀过短，命中率可能偏低 |
@@ -1032,16 +1044,16 @@ public class ClaudeClient {
 | 2048-4096 tokens | 命中率提升 | 需受 TTFT 与成本预算约束 |
 | > 4096 tokens | 仅在高价值场景使用 | 需评估成本与延迟收益 |
 
-#### 4.5.3 OpenAI 的 128 Token 对齐
+#### 4.6.3 OpenAI 的 128 Token 对齐
 
 OpenAI 的 Prefix Cache 以 **128 tokens 为单位**对齐。这意味着：
 - 如果前缀是 1000 tokens，实际缓存 896 tokens（7 × 128）
 - 建议将 System Prompt 设计为 128 的整数倍
 
-### 4.6 多模态文件处理
+### 4.7 多模态文件处理
 本节描述用户上传的文件、用户输入的代码片段，以及 LLM 生成的代码/图片如何被处理并纳入上下文。
 
-#### 4.6.1 文件处理流程概览
+#### 4.7.1 文件处理流程概览
 ```mermaid
 graph TB
     classDef upload fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
@@ -1061,7 +1073,7 @@ graph TB
     subgraph Processing ["处理层"]
         DocParser["文档解析器<br/>Apache Tika"]
         VisionEncoder["视觉编码器<br/>GPT-4V / Gemini Vision"]
-        CodeIndex["Code Index<br/>(见第5章)"]
+        CodeIndex["Code Index Service<br/>(见第5章)"]
     end
 
     subgraph Storage ["存储层"]
@@ -1095,7 +1107,7 @@ graph TB
 
 当前阶段不引入向量数据库与 Embedding 模型，检索由 PostgreSQL 全文检索、MongoDB 文本块索引与 AST 结构召回协同完成。
 
-#### 4.6.2 文档处理（PDF/Word/Excel）
+#### 4.7.2 文档处理（PDF/Word/Excel）
 
 **处理流程**：
 
@@ -1178,7 +1190,7 @@ public class DocumentProcessor {
 ---
 ```
 
-#### 4.6.3 图片处理
+#### 4.7.3 图片处理
 
 图片分为两类：**用户上传的图片** 和 **LLM 生成的图片**。
 
@@ -1306,7 +1318,7 @@ public class GeneratedContentService {
 }
 ```
 
-#### 4.6.4 文件在 Prompt 布局中的位置
+#### 4.7.4 文件在 Prompt 布局中的位置
 
 | 文件类型 | Prompt 位置 | 处理方式 | 时机 |
 |---------|------------|---------|-----|
@@ -1314,9 +1326,9 @@ public class GeneratedContentService {
 | **用户上传的代码** | B5 (RAG 检索) | 索引后按相关性检索 | 检索时 |
 | **用户上传的文档** | B5 (RAG 检索) | 切分 → 文本块入库 → 全文检索 | 检索时 |
 | **用户上传的图片** | B5 (附件描述) | Vision API 转文本描述 | 上传时 |
-| **LLM 生成的图片** | B4（对话历史）+ B5（引用） | 存储引用，必要时再次引用 | 对话中 |
+| **LLM 生成的图片** | B6（对话历史）+ B5（引用） | 存储引用，必要时再次引用 | 对话中 |
 
-#### 4.6.5 多模态压缩策略（Decay Engine）
+#### 4.7.5 多模态压缩策略（Decay Engine）
 当上下文窗口紧张时，Decay Engine 会对多模态内容进行智能压缩：
 
 历史对话摘要由 Summary Manager 负责，按固定窗口基于原始对话生成 B4 摘要并写回数据库。每个摘要独立生成，不对已有摘要再摘要，避免语义漂移。Prompt 组装时只拼接摘要片段，并在超出预算时对摘要片段进行优先级裁剪与重排。
@@ -1471,7 +1483,82 @@ graph TB
     class QueryParser,LexicalSearch,SymbolSearch,Reranker Query;
 ```
 
-### 5.3 AST 解析与切片
+### 5.3 Code Index Service 详细设计
+**职责与边界**：
+- 处理用户上传、用户输入与 LLM 生成的代码
+- 进行 AST 解析、结构化索引与文本检索
+- 负责召回与融合排序，不输出原始文件
+
+**输入**：
+- code files、inline code、git sync、query
+
+**输出**：
+- CodeChunks（可直接放入 B5）
+
+**交互模块**：
+- Context Orchestrator、NQR Engine、PostgreSQL、MongoDB、GCS
+
+**内部模块**：
+- **AST Parser**：解析多语言代码结构
+- **Chunk Builder**：切分语义块并生成元数据
+- **Hybrid Retriever**：词法检索与符号检索融合
+
+**处理步骤**：
+1. 解析用户输入与上传代码，生成结构化实体
+2. 建立文本索引与符号索引写入 PG/Mongo
+3. 根据 NQR 重写的查询检索并融合结果
+
+```mermaid
+flowchart TB
+    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
+    classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+
+    Inline["用户输入代码"]:::input
+    Upload["文件上传"]:::input
+    LLMGen["LLM 生成代码"]:::input
+    Parse["AST 解析"]:::process
+    Index["索引写入"]:::process
+    Search["检索与融合"]:::process
+    PG[("PostgreSQL")]:::store
+    Mongo[("MongoDB")]:::store
+    GCS[("GCS")]:::store
+
+    Inline --> Parse
+    Upload --> Parse
+    LLMGen --> Parse
+    Parse --> Index --> PG
+    Parse --> Index --> Mongo
+    Upload --> GCS
+    LLMGen --> GCS
+    Search --> PG
+    Search --> Mongo
+```
+
+```mermaid
+sequenceDiagram
+    participant Orch as Context Orchestrator
+    participant Index as Code Index Service
+    participant PG as PostgreSQL
+    participant Mongo as MongoDB
+
+    Orch->>Index: search(query)
+    Index->>PG: lexical/symbol search
+    Index->>Mongo: chunk fetch
+    Index-->>Orch: codeChunks
+```
+
+```java
+@Service
+public class CodeIndexService {
+    public List<CodeChunk> search(String query, SearchContext context, int topK) {
+        List<SearchHit> hits = retrieve(query, context, topK);
+        return hydrateChunks(hits);
+    }
+}
+```
+
+### 5.4 AST 解析与切片
 
 ```java
 /**
@@ -1572,7 +1659,7 @@ public class TreeSitterASTParser {
 }
 ```
 
-### 5.4 语义切片策略
+### 5.5 语义切片策略
 
 ```java
 /**
@@ -1671,7 +1758,7 @@ public class SemanticCodeChunker {
 }
 ```
 
-### 5.5 全文索引与结构化索引
+### 5.6 全文索引与结构化索引
 
 文本块写入后同步生成两类索引：PostgreSQL 全文检索与结构化符号索引，用于在没有向量模型的情况下保持高召回。
 
@@ -1697,7 +1784,7 @@ CREATE INDEX code_identifiers_tokens_idx ON code_identifiers USING GIN (identifi
 CREATE INDEX code_identifiers_trgm_idx ON code_identifiers USING GIN (identifier gin_trgm_ops);
 ```
 
-### 5.6 模糊匹配与 CamelCase 分词
+### 5.7 模糊匹配与 CamelCase 分词
 
 为支持用户自然语言查询匹配代码标识符（如 `"get user name"` → `getUsername`），我们实现了专门的分词和索引策略：
 拼写容错由 trigram 相似度与编辑距离阈值共同保障，可覆盖 `"takeItem"` 与 `"takeItems"` 等轻微拼写差异。
@@ -1773,7 +1860,7 @@ ON code_identifiers USING GIN (identifier_tokens);
 | `"calculate total"` | `["calculate", "total"]` | `calculateTotal`, `calc_total`, `computeTotalAmount` |
 | `"http request"` | `["http", "request"]` | `httpRequest`, `HttpRequestHandler`, `http_request_util` |
 
-### 5.7 混合检索（全文 + 结构）
+### 5.8 混合检索（全文 + 结构）
 
 ```java
 /**
@@ -1869,7 +1956,7 @@ graph TB
         PrefixMgr["Prefix Cache Manager"]
         
         CacheMonitor["Cache Monitor"]
-        CodeIndex["Code Index"]
+        CodeIndex["Code Index Service"]
         DocProcessor["Document Processor"]
         ImgProcessor["Image Processor"]
     end
@@ -1939,18 +2026,18 @@ graph TB
 | **NQR Engine** | 意图重写与实体对齐 | Query + History | RewrittenQuery | CodeIndex | P99 < 30ms |
 | **State Overlay** | 状态版本合并 | BaseState + ShadowBuffer | MergedState | Redis, PG | P99 < 10ms |
 | **Decay Engine** | 多模态压缩 | MediaItems | CompressedText | - | P99 < 100ms |
-| **Prompt Assembler** | B1-B5 组装 | AllBlocks | AssembledPrompt | Redis, PG | P99 < 5ms |
+| **Prompt Assembler** | B1-B6 组装 | AllBlocks | AssembledPrompt | Redis, PG | P99 < 5ms |
 | **Prefix Cache Manager** | 前缀指纹与命中管理 | PromptBlocks | PrefixHint | Redis | P99 < 5ms |
 | **Cache Monitor** | 缓存命中率监控 | LLM Response | CacheStats | Cloud LLM | - |
-| **Code Index** | 代码语义检索 | Query | CodeChunks | PG, Mongo, GCS | P99 < 80ms |
+| **Code Index Service** | 代码语义检索 | Query | CodeChunks | PG, Mongo, GCS | P99 < 80ms |
 | **Document Processor** | 文档解析与索引 | UploadedFile | DocChunks | Tika, Mongo, GCS, PG | P99 < 500ms |
 | **Image Processor** | 图片描述生成 | UploadedImage | TextDescription | Vision API, GCS | P99 < 2s |
 
-State Overlay 以 PostgreSQL 中的基准状态为真相来源，叠加 Redis Shadow Buffer 中的未持久化事件，按 Sync-Epoch 顺序合并为可用的任务状态。它只处理结构化状态，不包含对话摘要，因此与 B3 的摘要职责不重叠。
+State Overlay 以 PostgreSQL 中的基准状态为真相来源，叠加 Redis Shadow Buffer 中的未持久化事件，按 Sync-Epoch 顺序合并为可用的任务状态。它只处理结构化状态，不包含对话摘要，因此与 B4 的摘要职责不重叠。
 
 ### 6.3 Context Orchestrator 详细设计
 **职责与边界**：
-- 统一调度 B1-B5 的加载、NQR 重写、状态合并与 RAG 检索
+- 统一调度 B1/B2a/B4/B6 的加载、NQR 重写、状态合并与 RAG 检索
 - 负责 Token 预算与降级策略编排，不直接实现子引擎逻辑
 - 负责调用 Prefix Cache Manager 与 Cache Monitor 完成命中统计
 
@@ -1962,7 +2049,7 @@ State Overlay 以 PostgreSQL 中的基准状态为真相来源，叠加 Redis Sh
 
 **交互模块**：
 - NQR Engine、State Overlay、Decay Engine、Prompt Assembler
-- Code Index、Prefix Cache Manager、Cache Monitor
+- Code Index Service、Prefix Cache Manager、Cache Monitor
 - Redis、PostgreSQL、MongoDB、GCS、Cloud LLM Adapter
 
 ```mermaid
@@ -1972,7 +2059,7 @@ flowchart TB
     classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
     Req["GetContextRequest"]:::input
-    Load["并行加载 B1/B2/B3/B4<br/>与 Shadow Buffer"]:::process
+    Load["并行加载 B1/B2a/B4/B6<br/>与 Shadow Buffer"]:::process
     Overlay["State Overlay 合并"]:::process
     Rewrite["NQR 重写"]:::process
     Search["RAG 检索 (B5)"]:::process
@@ -1995,7 +2082,7 @@ sequenceDiagram
     participant Orch as Context Orchestrator
     participant NQR as NQR Engine
     participant Overlay as State Overlay
-    participant Index as Code Index
+    participant Index as Code Index Service
     participant Assembler as Prompt Assembler
     participant Prefix as Prefix Cache Manager
 
@@ -2003,7 +2090,7 @@ sequenceDiagram
     Orch->>Overlay: merge(BaseState, ShadowEvents)
     Orch->>NQR: rewrite(userQuery, recentHistory, taskState)
     Orch->>Index: search(rewrittenQuery)
-    Orch->>Assembler: assemble(B1..B5)
+    Orch->>Assembler: assemble(B1..B6)
     Orch->>Prefix: computeHash/lookup
     Orch-->>AS: ContextResponse
 ```
@@ -2041,16 +2128,16 @@ public class ContextOrchestrator {
                     () -> loadSystemPrompt(request.getAgentId()))
             );
             
-            CompletableFuture<String> b2Future = CompletableFuture.supplyAsync(
-                () -> l1Cache.getOrLoad("b2:" + userId,
+            CompletableFuture<String> b2aFuture = CompletableFuture.supplyAsync(
+                () -> l1Cache.getOrLoad("b2a:" + userId,
                     () -> loadStaticProfile(userId))
             );
             
-            CompletableFuture<List<SummaryChunk>> b3SummaryFuture = CompletableFuture.supplyAsync(
+            CompletableFuture<List<SummaryChunk>> b4SummaryFuture = CompletableFuture.supplyAsync(
                 () -> loadHistorySummary(threadId)
             );
             
-            CompletableFuture<List<Message>> b4Future = CompletableFuture.supplyAsync(
+            CompletableFuture<List<Message>> b6Future = CompletableFuture.supplyAsync(
                 () -> loadRecentHistory(threadId, request.getWindowSize())
             );
             
@@ -2064,9 +2151,9 @@ public class ContextOrchestrator {
             
             // 2. 等待并行任务完成
             String b1 = b1Future.join();
-            String b2 = b2Future.join();
-            List<SummaryChunk> b3Chunks = b3SummaryFuture.join();
-            List<Message> b4Messages = b4Future.join();
+            String b2a = b2aFuture.join();
+            List<SummaryChunk> b4SummaryChunks = b4SummaryFuture.join();
+            List<Message> b6Messages = b6Future.join();
             TaskState taskStateBase = taskStateBaseFuture.join();
             List<StateEvent> shadowEvents = shadowBufferFuture.join();
             
@@ -2075,8 +2162,8 @@ public class ContextOrchestrator {
             
             // 4. NQR 意图重写（如果需要）
             String userQuery = request.getUserMessage();
-            if (nqrEngine.needsRewrite(userQuery, b4Messages)) {
-                userQuery = nqrEngine.rewrite(userQuery, b4Messages, mergedTaskState);
+            if (nqrEngine.needsRewrite(userQuery, b6Messages)) {
+                userQuery = nqrEngine.rewrite(userQuery, b6Messages, mergedTaskState);
             }
             
             // 5. RAG 检索 (B5)
@@ -2104,15 +2191,15 @@ public class ContextOrchestrator {
             }
 
             String taskStateSection = mergedTaskState.toJson();
-            String attachmentsAndTools = extractVolatileContext(request, b4Messages);
+            String attachmentsAndTools = extractVolatileContext(request, b6Messages);
             b5Content = mergeB5Sections(b5Content, taskStateSection, attachmentsAndTools);
             
             // 8. 组装 Prompt
             PromptBlocks blocks = PromptBlocks.builder()
                 .b1(b1)
-                .b2(b2)
-                .b3Chunks(b3Chunks)
-                .b4Messages(b4Messages)
+                .b2a(b2a)
+                .b4SummaryChunks(b4SummaryChunks)
+                .b6Messages(b6Messages)
                 .b5(b5Content)
                 .build();
             
@@ -2156,7 +2243,7 @@ public class ContextOrchestrator {
     public void saveContext(SaveContextRequest request) {
         String threadId = request.getThreadId();
         
-        // 1. 更新 B4 近景历史
+        // 1. 更新 B6 近景历史
         appendToRecentHistory(threadId, request.getAssistantMessage());
         
         // 2. 更新 Shadow Buffer
@@ -2188,13 +2275,13 @@ public class ContextOrchestrator {
 - 不改写 System Prompt，只处理当前问题与历史对话
 
 **输入**：
-- 当前用户问题、B4 近景对话、结构化任务状态
+- 当前用户问题、B6 近景对话、结构化任务状态
 
 **输出**：
 - RewrittenQuery（包含补全实体与标准化关键词）
 
 **交互模块**：
-- Context Orchestrator、Code Index
+- Context Orchestrator、Code Index Service
 
 **内部模块**：
 - **Coreference Resolver**：消解代词与省略信息
@@ -2203,7 +2290,7 @@ public class ContextOrchestrator {
 - **Rewrite Policy**：控制是否重写与重写强度
 
 **处理步骤**：
-1. 基于 B4 近景对话识别省略和指代
+1. 基于 B6 近景对话识别省略和指代
 2. 将任务状态中的实体绑定到查询
 3. 归一化关键词，输出可检索的结构化查询
 
@@ -2213,7 +2300,7 @@ flowchart TB
     classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
 
     Q["User Query"]:::input
-    History["B4 近景对话"]:::input
+    History["B6 近景对话"]:::input
     State["任务状态"]:::input
     Resolve["指代消解"]:::process
     Align["实体对齐"]:::process
@@ -2229,7 +2316,7 @@ flowchart TB
 sequenceDiagram
     participant Orch as Context Orchestrator
     participant NQR as NQR Engine
-    participant Index as Code Index
+    participant Index as Code Index Service
 
     Orch->>NQR: rewrite(query, recentHistory, taskState)
     NQR-->>Orch: rewrittenQuery
@@ -2381,11 +2468,11 @@ public class DecayEngine {
 
 ### 6.7 Prompt Assembler 详细设计
 **职责与边界**：
-- 构建 System Prompt 与 Message List
-- 保证 B1/B2 稳定格式，提升 Prefix Cache 命中
+- 构建 System Message 与 Message List
+- 保证 B1/B2a 稳定格式，提升 Prefix Cache 命中
 
 **输入**：
-- PromptBlocks（B1-B5）
+- PromptBlocks（B1/B2a/B2b/B3/B4/B5/B6）
 
 **输出**：
 - AssembledPrompt
@@ -2395,12 +2482,12 @@ public class DecayEngine {
 
 **内部模块**：
 - **System Builder**：构建稳定的 System Prompt
-- **History Builder**：拼接 B3/B4 历史消息
-- **Current Builder**：组装 B5 动态上下文与用户问题
+- **History Builder**：拼接 B4/B6 历史消息
+- **Current Builder**：组装 B5/B3/B2b 动态上下文与用户问题
 
 **处理步骤**：
-1. 构建 B1/B2 的稳定系统消息
-2. 将 B3/B4 组织为 Message List
+1. 构建 B1/B2a 的稳定系统消息
+2. 将 B4/B6 组织为 Message List
 3. 生成当前用户消息并追加到列表末尾
 
 ```mermaid
@@ -2409,8 +2496,8 @@ flowchart TB
     classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
 
     Blocks["PromptBlocks"]:::input
-    System["System Prompt (B1/B2)"]:::process
-    Messages["Message List (B3/B4/B5)"]:::process
+    System["System Message (B1/B2a)"]:::process
+    Messages["Message List (B4/B6 + 当前消息: B5/B3/B2b)"]:::process
     Output["AssembledPrompt"]:::input
 
     Blocks --> System --> Output
@@ -2439,7 +2526,7 @@ public class PromptAssembler {
 
 ### 6.8 Prefix Cache Manager 详细设计
 **职责与边界**：
-- 计算 B1/B2/B3/B4 前缀哈希
+- 计算 B1/B2a/B4/B6 前缀哈希
 - 管理 Redis 中的 PrefixHint 与命中统计
 - 不负责调用 LLM
 
@@ -2453,7 +2540,7 @@ public class PromptAssembler {
 - Context Orchestrator、Redis
 
 **内部模块**：
-- **Hash Planner**：生成 B1/B2/B3/B4 的分层指纹
+- **Hash Planner**：生成 B1/B2a/B4/B6 的分层指纹
 - **Bucket Locator**：基于 LSH 规则定位候选桶
 - **Hint Registry**：维护 PrefixHint 与命中统计
 
@@ -2469,7 +2556,7 @@ flowchart TB
     classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
 
     Blocks["PromptBlocks"]:::input
-    Hash["分层哈希 (B1/B2/B3/B4)"]:::process
+    Hash["分层哈希 (B1/B2a/B4/B6)"]:::process
     Lookup["Redis 查询"]:::process
     Hit["PrefixHit"]:::input
     Redis[("Redis")]:::store
@@ -2559,86 +2646,10 @@ public class CacheMonitor {
 }
 ```
 
-### 6.10 Code Index 详细设计
-<!-- 这看起来Code Index的内容被分散在了2个地方，Ch 5是讲的code index，section 6.10也是讲的code index，应该要合并到一起才对 -->
-**职责与边界**：
-- 处理用户上传、用户输入与 LLM 生成的代码
-- 进行 AST 解析、结构化索引与文本检索
-- 负责召回与融合排序，不输出原始文件
-
-**输入**：
-- code files、inline code、git sync、query
-
-**输出**：
-- CodeChunks（可直接放入 B5）
-
-**交互模块**：
-- Context Orchestrator、NQR Engine、PostgreSQL、MongoDB、GCS
-
-**内部模块**：
-- **AST Parser**：解析多语言代码结构
-- **Chunk Builder**：切分语义块并生成元数据
-- **Hybrid Retriever**：词法检索与符号检索融合
-
-**处理步骤**：
-1. 解析用户输入与上传代码，生成结构化实体
-2. 建立文本索引与符号索引写入 PG/Mongo
-3. 根据 NQR 重写的查询检索并融合结果
-
-```mermaid
-flowchart TB
-    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
-    classDef store fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-
-    Inline["用户输入代码"]:::input
-    Upload["文件上传"]:::input
-    LLMGen["LLM 生成代码"]:::input
-    Parse["AST 解析"]:::process
-    Index["索引写入"]:::process
-    Search["检索与融合"]:::process
-    PG[("PostgreSQL")]:::store
-    Mongo[("MongoDB")]:::store
-    GCS[("GCS")]:::store
-
-    Inline --> Parse
-    Upload --> Parse
-    LLMGen --> Parse
-    Parse --> Index --> PG
-    Parse --> Index --> Mongo
-    Upload --> GCS
-    LLMGen --> GCS
-    Search --> PG
-    Search --> Mongo
-```
-
-```mermaid
-sequenceDiagram
-    participant Orch as Context Orchestrator
-    participant Index as Code Index
-    participant PG as PostgreSQL
-    participant Mongo as MongoDB
-
-    Orch->>Index: search(query)
-    Index->>PG: lexical/symbol search
-    Index->>Mongo: chunk fetch
-    Index-->>Orch: codeChunks
-```
-
-```java
-@Service
-public class CodeIndexService {
-    public List<CodeChunk> search(String query, SearchContext context, int topK) {
-        List<SearchHit> hits = retrieve(query, context, topK);
-        return hydrateChunks(hits);
-    }
-}
-```
-
-### 6.11 Document Processor 详细设计
+### 6.10 Document Processor 详细设计
 **职责与边界**：
 - 解析上传文档为文本块
-- 生成元数据与索引，供 Code Index 检索复用
+- 生成元数据与索引，供 Code Index Service 检索复用
 
 **输入**：
 - UploadedFile
@@ -2700,7 +2711,7 @@ public class DocumentProcessor {
 }
 ```
 
-### 6.12 Image Processor 详细设计
+### 6.11 Image Processor 详细设计
 **职责与边界**：
 - 将用户上传与 LLM 生成图片生成文本描述
 - 生成可检索的描述块并存储
@@ -2793,10 +2804,10 @@ sequenceDiagram
         AS->>CS: gRPC: GetContext(thread_id, user_id)
         
         par 并行数据获取
-            CS->>Redis: GET b4:{thread_id}
+            CS->>Redis: GET b6:{thread_id}
             CS->>Redis: GET shadow:{thread_id}
-            CS->>PG: SELECT b3 FROM summaries
-            CS->>CS: L1 Cache: B1, B2
+            CS->>PG: SELECT b4 FROM summaries
+            CS->>CS: L1 Cache: B1, B2a
         end
         
         CS->>CS: State Overlay Merge
@@ -2831,7 +2842,7 @@ sequenceDiagram
         AS->>CS: SaveContext(response, state_delta)
         
         par 同步更新
-            CS->>Redis: LPUSH b4:{thread_id}
+            CS->>Redis: LPUSH b6:{thread_id}
             CS->>Redis: LPUSH shadow:{thread_id}
         end
         
@@ -2848,10 +2859,10 @@ sequenceDiagram
 ### 7.2 延迟分解分析
 | 阶段 | 操作 | P50 | P95 | P99 | 优化策略 |
 |-----|-----|-----|-----|-----|---------|
-| **数据获取** | B4 Redis GET | 1ms | 3ms | 5ms | Pipeline |
+| **数据获取** | B6 Redis GET | 1ms | 3ms | 5ms | Pipeline |
 | | Shadow Buffer GET | 1ms | 3ms | 5ms | 同上 |
-| | B3 PG SELECT | 5ms | 15ms | 30ms | 索引优化 |
-| | B1/B2 L1 Cache | 0.1ms | 0.5ms | 1ms | 预热 |
+| | B4 PG SELECT | 5ms | 15ms | 30ms | 索引优化 |
+| | B1/B2a L1 Cache | 0.1ms | 0.5ms | 1ms | 预热 |
 | | 网络 I/O (Redis/PG/Mongo) | 1ms | 3ms | 5ms | 连接复用 |
 | **计算** | State Overlay | 2ms | 5ms | 10ms | 增量合并 |
 | | NQR Rewrite | 10ms | 20ms | 30ms | 小模型 |
@@ -2860,7 +2871,7 @@ sequenceDiagram
 | **检索** | Lexical Search (PG/Mongo) | 15ms | 40ms | 80ms | GIN/Trigram |
 | | Rerank | 10ms | 25ms | 50ms | 批处理 |
 | **云 LLM** | API 调用 (缓存命中) | 100ms | 200ms | 350ms | Prefix Cache |
-| | API 调用 (未命中) | 300ms | 600ms | 800ms | B1-B5 布局 |
+| | API 调用 (未命中) | 300ms | 600ms | 800ms | B1-B6 布局 |
 | | Decoding | 与输出长度成正比 | - | - | - |
 | **总计** | GetContext | 35ms | 80ms | 150ms | - |
 | | 完整请求 (缓存命中) | 200ms | 350ms | 500ms | - |
@@ -2868,13 +2879,12 @@ sequenceDiagram
 > LSH 用于将稳定的前缀哈希映射到固定桶，快速筛出可能命中的缓存候选，减少全量比对成本。
 
 #### 7.2.1 LSH 前缀桶策略
-<!-- 我没有看懂LSH在整个架构中的作用，前面的图中也没有提到LSH，你看是把LSH加到架构中，还是删掉比较好 -->
 LSH 用于对 Prefix Hash 做近似分桶，降低 PrefixHint 的扫描与比对成本。系统采用固定桶数与短哈希前缀作为桶键，将可能命中的候选聚集到同一桶内，再执行精确哈希比对。
 
 **策略要点**：
-- **分桶维度**：以 B1/B2/B3/B4 的分层哈希为输入，先取短哈希前缀形成桶键。
+- **分桶维度**：以 B1/B2a/B4/B6 的分层哈希为输入，先取短哈希前缀形成桶键。
 - **候选集缩小**：仅对同桶内的候选做完整哈希比对。
-- **命中优先级**：优先匹配更长前缀（B1+B2+B3+B4），再退到 B1+B2 或 B1。
+- **命中优先级**：优先匹配更长前缀（B1+B2a+B4+B6），再退到 B1+B2a 或 B1。
 
 ```mermaid
 flowchart TB
@@ -2903,19 +2913,18 @@ TTFT = 网络往返 + Prefill + 首 Token 解码
 Prefill_cached = Prefill_uncached × (1 - cache_hit)
 ```
 
-<!-- 这里是不是要加额外的符号，渲染出来的结果里我看到的很多都是下划线，而不是下标 -->
 | 场景 | Prefill | 网络往返 | TTFT |
 |-----|--------|---------|------|
-| 无缓存 | T_prefill | T_rtt | T_rtt + T_prefill + T_decode |
-| 命中率 h | T_prefill × (1 - h) | T_rtt | T_rtt + T_prefill × (1 - h) + T_decode |
+| 无缓存 | T<sub>prefill</sub> | T<sub>rtt</sub> | T<sub>rtt</sub> + T<sub>prefill</sub> + T<sub>decode</sub> |
+| 命中率 h | T<sub>prefill</sub> × (1 - h) | T<sub>rtt</sub> | T<sub>rtt</sub> + T<sub>prefill</sub> × (1 - h) + T<sub>decode</sub> |
 ### 8.2 Prefix Cache 复用率模型
 
 ```
-Prefix 复用率 = P(B1 match) × P(B2 match | B1) × P(B3 match | B1,B2) × P(B4 match | B1,B2,B3)
+Prefix 复用率 = P(B1 match) × P(B2a match | B1) × P(B4 match | B1,B2a) × P(B6 match | B1,B2a,B4)
 
 **评估方法**：
 - 从 Cache Monitor 收集的 prefix_hit_level 统计中计算各层级命中比例
-- 以同一用户/线程的连续请求为样本，分层计算 B1/B2/B3/B4 的稳定度
+- 以同一用户/线程的连续请求为样本，分层计算 B1/B2a/B4/B6 的稳定度
 - 使用真实压测数据回填 P(Bx match | ...) 与整体复用率
 ```
 
@@ -2982,21 +2991,16 @@ graph TB
 - **局部降级**：仅替换故障子模块，不影响其他链路
 - **可观测性**：每次降级都记录指标与触发原因
 
-<!-- 这个图不对，不是要写有哪些地方要降级，换成表格吧，要说明每一个模块的降级策略是什么，降级条件是什么，当前这个图就完全没有信息量 -->
-```mermaid
-flowchart TB
-    classDef input fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef process fill:#fff3e0,stroke:#ef6c00,stroke-width:2px;
-    classDef output fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px;
+**降级策略清单（按模块）**：
 
-    Req["Context Request"]:::input
-    NQR["NQR 降级链"]:::process
-    State["State 降级链"]:::process
-    RAG["RAG 降级链"]:::process
-    Resp["Context Response"]:::output
-
-    Req --> NQR --> State --> RAG --> Resp
-```
+| 模块 | 降级条件 | 降级策略 | 输出影响 |
+|-----|---------|---------|---------|
+| **NQR Engine** | 重写模型超时、不可用、成本超标 | 7B → 1.5B → 规则化重写 → 透传原始问题 | 检索准确率降低，但不影响对话可用性 |
+| **State Overlay** | Redis 不可用或 Shadow Buffer 读取失败 | Redis → PostgreSQL → 空状态 | 任务状态精度下降，B3 可能为空 |
+| **RAG 检索** | PG/Mongo 任一不可用或超时 | 混合检索 → 仅结构化/词法 → 仅文本块 → 跳过 RAG | B5 检索片段减少或为空 |
+| **Prefix Cache Manager** | Redis 不可用或前缀哈希失配 | 不返回 PrefixHint（视为未命中） | TTFT 可能上升，但功能不受影响 |
+| **Document/Image Processor** | Tika/Vision API 超时、错误 | 仅保留文件元数据或历史描述 | B5 附件描述不完整 |
+| **Code Index Service** | Index 服务不可用或检索超时 | 返回空结果 | B5 代码检索为空 |
 
 ```java
 /**
@@ -3113,7 +3117,14 @@ public class ContextDegradationPolicy {
 
 ### 9.3 数据一致性保证
 数据一致性以 Sync-Epoch 为核心，保证同一线程的状态更新具备顺序性与原子性。
-<!-- 一直到这里我都不知道shadow buffer是什么，完全没有文字说明 -->
+
+**Shadow Buffer 定义**：
+- **形态**：每个 thread 的追加型事件日志（Redis List 或 Stream）。
+- **内容**：尚未持久化的状态增量（state delta），例如槽位更新、任务阶段变化、工具输出摘要。
+- **字段建议**：`epoch`、`event_type`、`payload`、`timestamp`、`request_id`。
+- **用途**：与 PostgreSQL 的基准状态合并得到当前 B3 任务状态；在异常恢复时可按 epoch 回放，避免状态丢失。
+- **生命周期**：通过异步落库成功回执或 TTL 进行清理，确保缓存可控。
+
 **一致性目标**：
 - **单线程顺序一致**：同一 thread 内按 Epoch 严格有序
 - **读写可见性**：B5 读取到最新的结构化状态
@@ -3237,7 +3248,7 @@ public class StateConsistencyGuard {
 
 | 机制 | 原理 | 预期效果 |
 |-----|-----|---------|
-| **B3 历史摘要** | 将早期对话压缩为摘要，保留关键信息 | 上下文窗口利用率提升 3x |
+| **B4 历史摘要** | 将早期对话压缩为摘要，保留关键信息 | 上下文窗口利用率提升 3x |
 | **NQR 意图重写** | 将"它"替换为"用户之前提到的 React 组件" | 消除代词歧义，准确率 +15% |
 | **State Overlay** | 合并历史状态与增量更新 | 状态一致性 100% |
 
@@ -3257,14 +3268,14 @@ Round 21-30 → Summary of (Summary B + Round 21-30) = Summary C
 ```
 
 **我们的方案（避免语义漂移）**：
-B3 负责早期对话的稳定记忆，B4 负责近景对话窗口；State Overlay 只负责结构化状态的合并，职责互补而不重合。B3 通过分段摘要与周期性合并控制体量，State Overlay 通过事件增量保障状态一致性。
+B4 负责早期对话的稳定记忆，B6 负责近景对话窗口；State Overlay 只负责结构化状态的合并，职责互补而不重合。B4 通过分段摘要与周期性合并控制体量，State Overlay 通过事件增量保障状态一致性。
 ```
 Context Service 方案:
 Round 1-10  → Summary S1 (原始对话直接摘要，存储)
 Round 11-20 → Summary S2 (原始对话直接摘要，存储)
 Round 21-30 → Summary S3 (原始对话直接摘要，存储)
                 ↓
-组装 Prompt 时: B3 = concat(S1, S2, S3, ...) 并按 Token 预算裁剪
+组装 Prompt 时: B4 = concat(S1, S2, S3, ...) 并按 Token 预算裁剪
                  ↓
         每个摘要独立生成，不依赖之前的摘要
         所有摘要都基于原始对话，无信息损失
@@ -3280,7 +3291,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 | **分段追加 + 周期性合并** | 当摘要段过多时生成合并摘要并归档旧段 | 控制体量，避免无限增长 |
 
 **验证方法**：
-- 在 30+ 轮对话测试集上，对比有/无 B4 的 LLM 输出质量
+- 在 30+ 轮对话测试集上，对比有/无 B4/B6 的 LLM 输出质量
 - 人工标注"逻辑漂移"发生率
 - 对比"Summary of Summary" vs "独立摘要拼接"的信息保留率
 
@@ -3336,7 +3347,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 |---------|---------|---------|
 | Redis 单节点故障 | Sentinel 自动切换 | 无感知 |
 | PostgreSQL 主库故障 | 读取 Replica | 只读模式 |
-| Code Index 不可用 | 跳过 RAG | 功能降级 |
+| Code Index Service 不可用 | 跳过 RAG | 功能降级 |
 | 云 LLM API 限流 | 指数退避 + 备用 Provider | 延迟增加 |
 
 **验证方法**：
@@ -3348,7 +3359,7 @@ Round 21-30 → Summary S3 (原始对话直接摘要，存储)
 | 指标 | 现状 | 目标 | 说明 |
 |-----|-----|-----|-----|
 | **TTFT P95** | 600ms | 350ms | Prefix Cache 命中后显著下降 |
-| **长对话一致性** | 60% | 80% | B4 + State Overlay 保障语义与状态 |
+| **长对话一致性** | 60% | 80% | B4/B6 + State Overlay 保障语义与状态 |
 | **用户重复表达次数** | 2.0 次/任务 | 1.2 次/任务 | 关键信息复用更稳定 |
 | **可解释性反馈** | 低 | 中高 | B5 检索片段可追溯来源 |
 
@@ -3547,7 +3558,7 @@ enum MediaType {
 | **Decay Engine** | - | 多模态压缩引擎，根据 Token 预算智能压缩文件描述 |
 | **Vision API** | - | 图片描述服务 (GPT-4V / Gemini Vision)，将图片转为文本 |
 | **Apache Tika** | - | 文档解析库，支持 PDF/Word/Excel 等格式的文本提取 |
-| **B1-B5** | Block 1-5 | Prompt 的五个结构化区块（见 4.1.4 B1-B5 模块说明） |
+| **B1-B6** | Block 1-6 | Prompt 的结构化区块（B2 拆分为 B2a/B2b，见 4.1.4 B 分层模块说明） |
 | **Hybrid Search** | - | 词法检索、符号检索与结果融合 |
 ---
 
@@ -3582,11 +3593,11 @@ enum MediaType {
 9. 明确 B4 与 State Overlay 职责边界，加入摘要分段与周期性合并策略。
 10. 简化 ROI 章节为用户体验收益评估。
 11. 将演进路线调整为 6 个月渐进式计划，并加入 POC 验证阶段。
-12. 更新术语表中的 B1-B5 引用说明与检索术语定义。
+12. 更新术语表中的 B1-B6 引用说明与检索术语定义。
 13. 修正 Prompt 布局为 System + Message List，补充 B4 生成机制与 B5 定义。
 14. 补充 Claude 集成与多模态处理覆盖用户输入与 LLM 生成内容。
 15. 完善核心模块内部结构与处理步骤说明。
 16. 补充降级与一致性机制流程图与文字说明。
-17. 修正 Code Index 查询层与存储层连接关系。
+17. 修正 Code Index Service 查询层与存储层连接关系。
 
 ---
